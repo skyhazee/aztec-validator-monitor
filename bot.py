@@ -2,9 +2,10 @@ import os
 import json
 import logging
 from datetime import datetime
-import requests
 from functools import wraps
 
+# Import cloudscraper sebagai pengganti requests
+import cloudscraper
 from dotenv import load_dotenv
 from telegram import Update, ParseMode
 from telegram.ext import Updater, CommandHandler, CallbackContext
@@ -18,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 # --- Variabel Global & Konstanta ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-# Pastikan TELEGRAM_ID dibaca sebagai integer
 try:
     AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_ID"))
 except (ValueError, TypeError):
@@ -27,6 +27,9 @@ except (ValueError, TypeError):
 
 VALIDATORS_FILE = "validators.json"
 API_URL = "https://dashtec.xyz/api/validators/{}"
+
+# Buat instance scraper yang akan kita gunakan kembali
+scraper = cloudscraper.create_scraper()
 
 # --- Dekorator untuk Otorisasi ---
 def restricted(func):
@@ -57,18 +60,13 @@ def save_validators(validators):
 
 # --- Fungsi untuk Mengambil & Memformat Data ---
 def fetch_validator_data(address: str):
-    """Mengambil data validator dari API Dashtec."""
+    """Mengambil data validator menggunakan cloudscraper untuk melewati proteksi."""
     try:
-        # Header untuk meniru browser biasa
-        headers = {
-            'accept': 'application/json',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-            'referer': f'https://dashtec.xyz/validators/{address}'
-        }
-        response = requests.get(API_URL.format(address), headers=headers, timeout=10)
+        # Gunakan scraper.get, bukan requests.get
+        response = scraper.get(API_URL.format(address), timeout=20)
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         logger.error(f"Gagal mengambil data untuk {address}: {e}")
         return None
 
@@ -87,7 +85,6 @@ def format_status_message(data: dict):
     }
     status = status_map.get(data.get('status', 'UNKNOWN').upper(), "Unknown ❓")
     
-    # Nilai default jika kunci tidak ada
     performance = data.get('performance', {})
     attestation = performance.get('attestation', {})
     proposal = performance.get('block_proposal', {})
@@ -129,14 +126,15 @@ def format_status_message(data: dict):
 def start(update: Update, context: CallbackContext):
     """Mengirim pesan selamat datang."""
     user = update.effective_user
+    # Memperbaiki < dan > agar tidak dianggap tag HTML
     update.message.reply_html(
         f"Halo, {user.first_name}! 👋\n\n"
         "Saya adalah bot pemantau validator Aztec.\n\n"
         "Gunakan perintah berikut:\n"
-        "• `/add <alamat_validator>` untuk menambahkan validator.\n"
+        "• `/add &lt;alamat_validator&gt;` untuk menambahkan validator.\n"
         "• `/check` untuk memeriksa status semua validator.\n"
         "• `/list` untuk melihat daftar validator tersimpan.\n"
-        "• `/remove <alamat_validator>` untuk menghapus validator."
+        "• `/remove &lt;alamat_validator&gt;` untuk menghapus validator."
     )
 
 @restricted
@@ -175,7 +173,7 @@ def check_status(update: Update, context: CallbackContext):
             message = format_status_message(data)
             update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         else:
-            update.message.reply_text(f"❌ Gagal mendapatkan data untuk `{address}`. Mungkin API sedang down atau alamat tidak valid.", parse_mode=ParseMode.MARKDOWN)
+            update.message.reply_text(f"❌ Gagal mendapatkan data untuk `{address}`. Server mungkin memblokir permintaan atau alamat tidak valid.", parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 def list_validators(update: Update, context: CallbackContext):
@@ -218,14 +216,12 @@ def main():
     updater = Updater(BOT_TOKEN)
     dispatcher = updater.dispatcher
 
-    # Daftarkan command handlers
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("add", add_validator))
     dispatcher.add_handler(CommandHandler("check", check_status))
     dispatcher.add_handler(CommandHandler("list", list_validators))
     dispatcher.add_handler(CommandHandler("remove", remove_validator))
 
-    # Mulai bot
     updater.start_polling()
     logger.info("Bot berhasil dijalankan!")
     updater.idle()
