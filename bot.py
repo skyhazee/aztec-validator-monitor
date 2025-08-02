@@ -89,8 +89,14 @@ def format_status_message(data: dict):
     attestation = performance.get('attestation', {})
     proposal = performance.get('block_proposal', {})
 
-    balance = data.get('balance', 0)
-    total_rewards = data.get('totalRewards', 0)
+    # Mengubah data menjadi float (angka desimal) sebelum digunakan.
+    # Blok try-except ini untuk keamanan jika data tidak valid.
+    try:
+        balance = float(data.get('balance', 0))
+        total_rewards = float(data.get('totalRewards', 0))
+    except (ValueError, TypeError):
+        balance = 0.0
+        total_rewards = 0.0
     
     attestation_rate = attestation.get('rate', 0) * 100
     attestation_succeeded = attestation.get('succeeded', 0)
