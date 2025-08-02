@@ -80,36 +80,26 @@ def format_status_message(data: dict):
     status_map = {"VALIDATING": "Validating ✅"}
     status = status_map.get(data.get('status', 'UNKNOWN').upper(), f"{data.get('status', 'Unknown')} ❓")
 
-    # --- PERUBAHAN LOGIKA TOTAL DI SINI ---
-
-    # 1. Mengambil data dengan nama kunci yang BENAR dari API
     try:
         raw_balance = float(data.get('balance', 0))
-        # Menggunakan 'unclaimedRewards' bukan 'totalRewards'
         raw_total_rewards = float(data.get('unclaimedRewards', 0))
-
         balance = raw_balance / 1e18
         total_rewards = raw_total_rewards / 1e18
     except (ValueError, TypeError):
         balance = 0.0
         total_rewards = 0.0
 
-    # 2. Mengambil data atestasi & menghitung rate secara manual
     attestation_succeeded = data.get('totalAttestationsSucceeded', 0)
     attestation_missed = data.get('totalAttestationsMissed', 0)
     total_attestations = attestation_succeeded + attestation_missed
     attestation_rate = (attestation_succeeded / total_attestations * 100) if total_attestations > 0 else 0
 
-    # 3. Mengambil data proposal & menghitung rate secara manual
     proposal_succeeded = data.get('totalBlocksProposed', 0)
     proposal_missed = data.get('totalBlocksMissed', 0)
     total_proposals = proposal_succeeded + proposal_missed
     proposal_rate = (proposal_succeeded / total_proposals * 100) if total_proposals > 0 else 0
 
-    # 4. Mengambil data partisipasi epoch dengan nama yang BENAR
     epoch_participation = data.get('totalParticipatingEpochs', 'N/A')
-
-    # --- AKHIR PERUBAHAN LOGIKA ---
 
     timestamp = datetime.now().strftime('%d %b %Y, %H:%M:%S')
 
@@ -125,6 +115,21 @@ def format_status_message(data: dict):
         f"📦 *Block Proposal Rate:* {proposal_rate:.1f}%\n"
         f"    {proposal_succeeded} Proposed / {proposal_missed} Missed\n\n"
         f"🗓️ *Epoch Participation:* {epoch_participation}\n"
+    )
+
+    # --- PERUBAHAN DI SINI ---
+    # Menambahkan bagian Voting History
+    voting_history = data.get('votingHistory', [])
+    if voting_history:
+        message += f"\n🗳️ *Voting History*\n"
+        for vote in voting_history:
+            # Asumsi setiap vote adalah dictionary, sesuaikan jika formatnya berbeda
+            vote_info = vote.get('info', 'N/A') # Ganti 'info' dengan key yang sesuai
+            vote_status = vote.get('status', 'N/A') # Ganti 'status' dengan key yang sesuai
+            message += f"    • {vote_info}: {vote_status}\n"
+    # --- AKHIR PERUBAHAN ---
+
+    message += (
         f"-----------------------------------\n"
         f"🕒 *Terakhir dicek:* {timestamp}"
     )
