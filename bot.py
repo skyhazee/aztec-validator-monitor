@@ -26,12 +26,8 @@ except (ValueError, TypeError):
     exit()
 
 VALIDATORS_FILE = "validators.json"
-# --- PERUBAHAN DI SINI ---
-# URL untuk detail satu validator
 API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
-# URL untuk daftar semua validator (untuk mendapatkan rank)
 API_URL_LIST = "https://dashtec.xyz/api/validators?"
-# --- AKHIR PERUBAHAN ---
 
 # Buat instance scraper yang akan kita gunakan kembali
 scraper = cloudscraper.create_scraper()
@@ -191,22 +187,30 @@ def check_status(update: Update, context: CallbackContext):
 
     update.message.reply_text(f"🔍 Mengambil daftar semua validator untuk mencari rank... Mohon tunggu, ini mungkin perlu waktu.")
     
-    all_validators_list = fetch_all_validators()
-    if not all_validators_list:
+    all_validators_data = fetch_all_validators()
+    if not all_validators_data:
         update.message.reply_text("❌ Gagal mengambil daftar validator dari API. Tidak bisa melanjutkan.")
         return
+    
+    # --- PERUBAHAN DI SINI ---
+    # Mengambil daftar dari dalam objek, dengan asumsi kuncinya adalah 'validators'.
+    # Menggunakan .get() untuk keamanan jika kuncinya tidak ada.
+    all_validators_list = all_validators_data.get('validators', [])
+    if not all_validators_list:
+        update.message.reply_text("❌ Tidak menemukan daftar validator di dalam data API.")
+        return
+    # --- AKHIR PERUBAHAN ---
 
     update.message.reply_text(f"✅ Daftar berhasil diambil. Memeriksa status untuk {len(validators_to_check)} validator Anda...")
 
     for address in validators_to_check:
-        # Cari rank dari daftar lengkap
         rank = "N/A"
         for validator_summary in all_validators_list:
+            # Pemeriksaan ini sekarang seharusnya aman
             if validator_summary.get('address', '').lower() == address.lower():
                 rank = validator_summary.get('rank', 'N/A')
                 break
         
-        # Ambil data detail untuk validator spesifik
         detail_data = fetch_validator_data(address)
         if detail_data:
             message = format_status_message(detail_data, rank)
