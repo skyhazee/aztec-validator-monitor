@@ -84,30 +84,36 @@ def format_status_message(data: dict):
         "OFFLINE": "Offline ❌"
     }
     status = status_map.get(data.get('status', 'UNKNOWN').upper(), "Unknown ❓")
-    
+
     performance = data.get('performance', {})
     attestation = performance.get('attestation', {})
     proposal = performance.get('block_proposal', {})
 
-    # Mengubah data menjadi float (angka desimal) sebelum digunakan.
     # Blok try-except ini untuk keamanan jika data tidak valid.
     try:
-        balance = float(data.get('balance', 0))
-        total_rewards = float(data.get('totalRewards', 0))
+        # Ambil nilai mentah dari API
+        raw_balance = float(data.get('balance', 0))
+        raw_total_rewards = float(data.get('totalRewards', 0))
+
+        # --- PERUBAHAN DI SINI ---
+        # Konversi dari unit terkecil ke STK dengan membagi 10^18
+        balance = raw_balance / 1e18
+        total_rewards = raw_total_rewards / 1e18
+
     except (ValueError, TypeError):
         balance = 0.0
         total_rewards = 0.0
-    
+
     attestation_rate = attestation.get('rate', 0) * 100
     attestation_succeeded = attestation.get('succeeded', 0)
     attestation_missed = attestation.get('missed', 0)
-    
+
     proposal_rate = proposal.get('rate', 0) * 100
     proposal_succeeded = proposal.get('proposed', 0)
     proposal_missed = proposal.get('missed', 0)
-    
+
     epoch_participation = data.get('epochParticipation', 'N/A')
-    
+
     timestamp = datetime.now().strftime('%d %b %Y, %H:%M:%S')
 
     message = (
