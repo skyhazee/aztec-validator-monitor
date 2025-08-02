@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 import cloudscraper
+import pytz # <-- Import library untuk zona waktu
 from dotenv import load_dotenv
 from telegram import Update, ParseMode, Bot
 from telegram.ext import Updater, CommandHandler, CallbackContext
@@ -29,6 +30,7 @@ VALIDATORS_FILE = "validators.json"
 LAST_STATE_FILE = "last_state.json"
 API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
 API_URL_LIST = "https://dashtec.xyz/api/validators?"
+WIB = pytz.timezone('Asia/Jakarta') # <-- Atur zona waktu WIB
 
 # --- Konfigurasi Caching untuk Peringkat ---
 CACHE_DURATION_SECONDS = 900  # 15 menit
@@ -119,7 +121,11 @@ def format_full_status_message(data: dict, rank: int | str):
     total_prop = prop_succeeded + prop_missed
     prop_rate = (prop_succeeded / total_prop * 100) if total_prop > 0 else 0
     epoch_part = data.get('totalParticipatingEpochs', 'N/A')
-    timestamp = datetime.now().strftime('%d %b %Y, %H:%M:%S')
+    
+    # --- PERUBAHAN DI SINI ---
+    timestamp = datetime.now(WIB).strftime('%d %b %Y, %H:%M:%S WIB')
+    # --- AKHIR PERUBAHAN ---
+
     message = (
         f"👑 *Rank:* {rank}\n"
         f"📊 *Status Validator:* `{short_addr}`\n"
