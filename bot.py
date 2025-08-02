@@ -62,7 +62,6 @@ def save_validators(validators):
 def fetch_validator_data(address: str):
     """Mengambil data validator menggunakan cloudscraper untuk melewati proteksi."""
     try:
-        # Gunakan scraper.get, bukan requests.get
         response = scraper.get(API_URL.format(address), timeout=20)
         response.raise_for_status()
         return response.json()
@@ -78,41 +77,39 @@ def format_status_message(data: dict):
     addr = data.get('address', 'N/A')
     short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
 
-    status_map = {
-        "VALIDATING": "Validating ✅",
-        "PENDING": "Pending ⏳",
-        "OFFLINE": "Offline ❌"
-    }
-    status = status_map.get(data.get('status', 'UNKNOWN').upper(), "Unknown ❓")
+    status_map = {"VALIDATING": "Validating ✅"}
+    status = status_map.get(data.get('status', 'UNKNOWN').upper(), f"{data.get('status', 'Unknown')} ❓")
 
-    performance = data.get('performance', {})
-    attestation = performance.get('attestation', {})
-    proposal = performance.get('block_proposal', {})
+    # --- PERUBAHAN LOGIKA TOTAL DI SINI ---
 
-    # Blok try-except ini untuk keamanan jika data tidak valid.
+    # 1. Mengambil data dengan nama kunci yang BENAR dari API
     try:
-        # Ambil nilai mentah dari API
         raw_balance = float(data.get('balance', 0))
-        raw_total_rewards = float(data.get('totalRewards', 0))
+        # Menggunakan 'unclaimedRewards' bukan 'totalRewards'
+        raw_total_rewards = float(data.get('unclaimedRewards', 0))
 
-        # --- PERUBAHAN DI SINI ---
-        # Konversi dari unit terkecil ke STK dengan membagi 10^18
         balance = raw_balance / 1e18
         total_rewards = raw_total_rewards / 1e18
-
     except (ValueError, TypeError):
         balance = 0.0
         total_rewards = 0.0
 
-    attestation_rate = attestation.get('rate', 0) * 100
-    attestation_succeeded = attestation.get('succeeded', 0)
-    attestation_missed = attestation.get('missed', 0)
+    # 2. Mengambil data atestasi & menghitung rate secara manual
+    attestation_succeeded = data.get('totalAttestationsSucceeded', 0)
+    attestation_missed = data.get('totalAttestationsMissed', 0)
+    total_attestations = attestation_succeeded + attestation_missed
+    attestation_rate = (attestation_succeeded / total_attestations * 100) if total_attestations > 0 else 0
 
-    proposal_rate = proposal.get('rate', 0) * 100
-    proposal_succeeded = proposal.get('proposed', 0)
-    proposal_missed = proposal.get('missed', 0)
+    # 3. Mengambil data proposal & menghitung rate secara manual
+    proposal_succeeded = data.get('totalBlocksProposed', 0)
+    proposal_missed = data.get('totalBlocksMissed', 0)
+    total_proposals = proposal_succeeded + proposal_missed
+    proposal_rate = (proposal_succeeded / total_proposals * 100) if total_proposals > 0 else 0
 
-    epoch_participation = data.get('epochParticipation', 'N/A')
+    # 4. Mengambil data partisipasi epoch dengan nama yang BENAR
+    epoch_participation = data.get('totalParticipatingEpochs', 'N/A')
+
+    # --- AKHIR PERUBAHAN LOGIKA ---
 
     timestamp = datetime.now().strftime('%d %b %Y, %H:%M:%S')
 
@@ -138,7 +135,6 @@ def format_status_message(data: dict):
 def start(update: Update, context: CallbackContext):
     """Mengirim pesan selamat datang."""
     user = update.effective_user
-    # Memperbaiki < dan > agar tidak dianggap tag HTML
     update.message.reply_html(
         f"Halo, {user.first_name}! 👋\n\n"
         "Saya adalah bot pemantau validator Aztec.\n\n"
@@ -225,7 +221,7 @@ def main():
         logger.error("BOT_TOKEN tidak ditemukan. Harap atur di file .env.")
         return
 
-    updater = Updater(BOT_TOKEN)
+    updater = Updater(BOT_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
 
     dispatcher.add_handler(CommandHandler("start", start))
