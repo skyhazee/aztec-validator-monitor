@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 
 import cloudscraper
-import pytz # <-- Import library untuk zona waktu
+import pytz
 from dotenv import load_dotenv
 from telegram import Update, ParseMode, Bot
 from telegram.ext import Updater, CommandHandler, CallbackContext
@@ -30,7 +30,7 @@ VALIDATORS_FILE = "validators.json"
 LAST_STATE_FILE = "last_state.json"
 API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
 API_URL_LIST = "https://dashtec.xyz/api/validators?"
-WIB = pytz.timezone('Asia/Jakarta') # <-- Atur zona waktu WIB
+WIB = pytz.timezone('Asia/Jakarta')
 
 # --- Konfigurasi Caching untuk Peringkat ---
 CACHE_DURATION_SECONDS = 900  # 15 menit
@@ -118,14 +118,12 @@ def format_full_status_message(data: dict, rank: int | str):
     total_att = att_succeeded + att_missed
     att_rate = (att_succeeded / total_att * 100) if total_att > 0 else 0
     
-    # --- PERUBAHAN DI SINI ---
     prop_proposed = data.get('totalBlocksProposed', 0)
     prop_mined = data.get('totalBlocksMined', 0)
-    prop_succeeded = prop_proposed + prop_mined # Menjumlahkan proposed dan mined
+    prop_succeeded = prop_proposed + prop_mined
     prop_missed = data.get('totalBlocksMissed', 0)
     total_prop = prop_succeeded + prop_missed
     prop_rate = (prop_succeeded / total_prop * 100) if total_prop > 0 else 0
-    # --- AKHIR PERUBAHAN ---
 
     epoch_part = data.get('totalParticipatingEpochs', 'N/A')
     timestamp = datetime.now(WIB).strftime('%d %b %Y, %H:%M:%S WIB')
@@ -141,7 +139,7 @@ def format_full_status_message(data: dict, rank: int | str):
         f"🛡️ *Attestation Rate:* {att_rate:.1f}%\n"
         f"    {att_succeeded} Succeeded / {att_missed} Missed\n\n"
         f"📦 *Block Proposal Rate:* {prop_rate:.1f}%\n"
-        f"    {prop_succeeded} Proposed or Mined / {prop_missed} Missed\n\n" # Label diperbarui
+        f"    {prop_succeeded} Proposed or Mined / {prop_missed} Missed\n\n"
         f"🗓️ *Epoch Participation:* {epoch_part}\n"
     )
     voting_history = data.get('votingHistory', [])
@@ -166,14 +164,31 @@ def check_for_updates(context: CallbackContext):
         if address not in last_state:
             last_state[address] = {"latest_attestation_slot": 0, "latest_proposal_slot": 0}
         state = last_state[address]
+        
+        # --- PERUBAHAN LOGIKA DI SINI ---
         # Cek Atestasi Baru
         latest_notified_att = state.get("latest_attestation_slot", 0)
         max_new_att = latest_notified_att
         for att in data.get('recentAttestations', []):
-            if att.get('slot', 0) > latest_notified_att:
-                bot.send_message(chat_id=AUTHORIZED_USER_ID, text=f"✍️ *Atestasi Sukses*\nValidator: `{addr_short}` | Slot: `#{att.get('slot')}`\nHasil: {att.get('status', 'N/A')}", parse_mode=ParseMode.MARKDOWN)
-                if att.get('slot', 0) > max_new_att: max_new_att = att.get('slot')
+            slot = att.get('slot', 0)
+            if slot > latest_notified_att:
+                status = att.get('status', 'N/A')
+                
+                # Tentukan judul dan emoji berdasarkan status
+                if status == 'Success':
+                    title = "✍️ *Atestasi Sukses*"
+                elif status == 'Missed':
+                    title = "⚠️ *Atestasi Terlewat*"
+                else:
+                    title = "ℹ️ *Update Atestasi*"
+                
+                message = f"{title}\nValidator: `{addr_short}` | Slot: `#{slot}`\nHasil: {status}"
+                bot.send_message(chat_id=AUTHORIZED_USER_ID, text=message, parse_mode=ParseMode.MARKDOWN)
+                
+                if slot > max_new_att: max_new_att = slot
         state["latest_attestation_slot"] = max_new_att
+        # --- AKHIR PERUBAHAN LOGIKA ---
+
         # Cek Proposal Blok Baru
         latest_notified_prop = state.get("latest_proposal_slot", 0)
         max_new_prop = latest_notified_prop
@@ -182,6 +197,7 @@ def check_for_updates(context: CallbackContext):
                 bot.send_message(chat_id=AUTHORIZED_USER_ID, text=f"✅ *Proposal Blok Sukses!*\nValidator: `{addr_short}` | Slot: `#{prop.get('slot')}`\nStatus: {prop.get('status', 'N/A').upper()}", parse_mode=ParseMode.MARKDOWN)
                 if prop.get('slot', 0) > max_new_prop: max_new_prop = prop.get('slot')
         state["latest_proposal_slot"] = max_new_prop
+    
     save_last_state(last_state)
     logger.info("Pengecekan notifikasi selesai.")
 
@@ -290,7 +306,7 @@ def main():
     dispatcher.add_handler(CommandHandler("add", add_validator))
     dispatcher.add_handler(CommandHandler("list", list_validators))
     dispatcher.add_handler(CommandHandler("remove", remove_validator))
-    dispatcher.add_handler(CommandHandler("check", check_status_command)) # Tambahkan kembali /check
+    dispatcher.add_handler(CommandHandler("check", check_status_command))
     
     updater.start_polling()
     logger.info("Bot berhasil dijalankan dengan notifikasi otomatis dan perintah /check!")
