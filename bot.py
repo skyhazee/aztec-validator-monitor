@@ -112,20 +112,24 @@ def format_full_status_message(data: dict, rank: int | str):
         balance = float(data.get('balance', 0)) / 1e18
         total_rewards = float(data.get('unclaimedRewards', 0)) / 1e18
     except (ValueError, TypeError): balance, total_rewards = 0.0, 0.0
+    
     att_succeeded = data.get('totalAttestationsSucceeded', 0)
     att_missed = data.get('totalAttestationsMissed', 0)
     total_att = att_succeeded + att_missed
     att_rate = (att_succeeded / total_att * 100) if total_att > 0 else 0
-    prop_succeeded = data.get('totalBlocksProposed', 0)
+    
+    # --- PERUBAHAN DI SINI ---
+    prop_proposed = data.get('totalBlocksProposed', 0)
+    prop_mined = data.get('totalBlocksMined', 0)
+    prop_succeeded = prop_proposed + prop_mined # Menjumlahkan proposed dan mined
     prop_missed = data.get('totalBlocksMissed', 0)
     total_prop = prop_succeeded + prop_missed
     prop_rate = (prop_succeeded / total_prop * 100) if total_prop > 0 else 0
-    epoch_part = data.get('totalParticipatingEpochs', 'N/A')
-    
-    # --- PERUBAHAN DI SINI ---
-    timestamp = datetime.now(WIB).strftime('%d %b %Y, %H:%M:%S WIB')
     # --- AKHIR PERUBAHAN ---
 
+    epoch_part = data.get('totalParticipatingEpochs', 'N/A')
+    timestamp = datetime.now(WIB).strftime('%d %b %Y, %H:%M:%S WIB')
+    
     message = (
         f"👑 *Rank:* {rank}\n"
         f"📊 *Status Validator:* `{short_addr}`\n"
@@ -137,7 +141,7 @@ def format_full_status_message(data: dict, rank: int | str):
         f"🛡️ *Attestation Rate:* {att_rate:.1f}%\n"
         f"    {att_succeeded} Succeeded / {att_missed} Missed\n\n"
         f"📦 *Block Proposal Rate:* {prop_rate:.1f}%\n"
-        f"    {prop_succeeded} Proposed / {prop_missed} Missed\n\n"
+        f"    {prop_succeeded} Proposed or Mined / {prop_missed} Missed\n\n" # Label diperbarui
         f"🗓️ *Epoch Participation:* {epoch_part}\n"
     )
     voting_history = data.get('votingHistory', [])
