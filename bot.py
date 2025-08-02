@@ -26,7 +26,12 @@ except (ValueError, TypeError):
     exit()
 
 VALIDATORS_FILE = "validators.json"
-API_URL = "https://dashtec.xyz/api/validators/{}"
+# --- PERUBAHAN DI SINI ---
+# URL untuk detail satu validator
+API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
+# URL untuk daftar semua validator (untuk mendapatkan rank)
+API_URL_LIST = "https://dashtec.xyz/api/validators?"
+# --- AKHIR PERUBAHAN ---
 
 # Buat instance scraper yang akan kita gunakan kembali
 scraper = cloudscraper.create_scraper()
@@ -60,16 +65,26 @@ def save_validators(validators):
 
 # --- Fungsi untuk Mengambil & Memformat Data ---
 def fetch_validator_data(address: str):
-    """Mengambil data validator menggunakan cloudscraper untuk melewati proteksi."""
+    """Mengambil data detail untuk satu validator."""
     try:
-        response = scraper.get(API_URL.format(address), timeout=20)
+        response = scraper.get(API_URL_DETAIL.format(address), timeout=20)
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        logger.error(f"Gagal mengambil data untuk {address}: {e}")
+        logger.error(f"Gagal mengambil data detail untuk {address}: {e}")
         return None
 
-def format_status_message(data: dict):
+def fetch_all_validators():
+    """Mengambil daftar semua validator untuk mencari rank."""
+    try:
+        response = scraper.get(API_URL_LIST, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Gagal mengambil daftar semua validator: {e}")
+        return None
+
+def format_status_message(data: dict, rank: int | str):
     """Memformat data JSON menjadi pesan yang mudah dibaca."""
     if not data:
         return "Gagal mengambil data."
@@ -100,10 +115,10 @@ def format_status_message(data: dict):
     proposal_rate = (proposal_succeeded / total_proposals * 100) if total_proposals > 0 else 0
 
     epoch_participation = data.get('totalParticipatingEpochs', 'N/A')
-
     timestamp = datetime.now().strftime('%d %b %Y, %H:%M:%S')
 
     message = (
+        f"👑 *Rank:* {rank}\n"
         f"📊 *Status Validator:* `{short_addr}`\n"
         f"{status}\n\n"
         f"💰 *Saldo:* {balance:.2f} STK\n"
@@ -117,17 +132,13 @@ def format_status_message(data: dict):
         f"🗓️ *Epoch Participation:* {epoch_participation}\n"
     )
 
-    # --- PERUBAHAN DI SINI ---
-    # Menambahkan bagian Voting History
     voting_history = data.get('votingHistory', [])
     if voting_history:
         message += f"\n🗳️ *Voting History*\n"
         for vote in voting_history:
-            # Asumsi setiap vote adalah dictionary, sesuaikan jika formatnya berbeda
-            vote_info = vote.get('info', 'N/A') # Ganti 'info' dengan key yang sesuai
-            vote_status = vote.get('status', 'N/A') # Ganti 'status' dengan key yang sesuai
+            vote_info = vote.get('info', 'N/A')
+            vote_status = vote.get('status', 'N/A')
             message += f"    • {vote_info}: {vote_status}\n"
-    # --- AKHIR PERUBAHAN ---
 
     message += (
         f"-----------------------------------\n"
@@ -173,20 +184,35 @@ def add_validator(update: Update, context: CallbackContext):
 @restricted
 def check_status(update: Update, context: CallbackContext):
     """Memeriksa status semua validator yang tersimpan."""
-    validators = load_validators()
-    if not validators:
+    validators_to_check = load_validators()
+    if not validators_to_check:
         update.message.reply_text("Tidak ada validator untuk diperiksa. Tambahkan dengan `/add <alamat>`.")
         return
 
-    update.message.reply_text(f"🔍 Memeriksa status untuk {len(validators)} validator... Mohon tunggu.")
+    update.message.reply_text(f"🔍 Mengambil daftar semua validator untuk mencari rank... Mohon tunggu, ini mungkin perlu waktu.")
+    
+    all_validators_list = fetch_all_validators()
+    if not all_validators_list:
+        update.message.reply_text("❌ Gagal mengambil daftar validator dari API. Tidak bisa melanjutkan.")
+        return
 
-    for address in validators:
-        data = fetch_validator_data(address)
-        if data:
-            message = format_status_message(data)
+    update.message.reply_text(f"✅ Daftar berhasil diambil. Memeriksa status untuk {len(validators_to_check)} validator Anda...")
+
+    for address in validators_to_check:
+        # Cari rank dari daftar lengkap
+        rank = "N/A"
+        for validator_summary in all_validators_list:
+            if validator_summary.get('address', '').lower() == address.lower():
+                rank = validator_summary.get('rank', 'N/A')
+                break
+        
+        # Ambil data detail untuk validator spesifik
+        detail_data = fetch_validator_data(address)
+        if detail_data:
+            message = format_status_message(detail_data, rank)
             update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
         else:
-            update.message.reply_text(f"❌ Gagal mendapatkan data untuk `{address}`. Server mungkin memblokir permintaan atau alamat tidak valid.", parse_mode=ParseMode.MARKDOWN)
+            update.message.reply_text(f"❌ Gagal mendapatkan data detail untuk `{address}`.", parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 def list_validators(update: Update, context: CallbackContext):
