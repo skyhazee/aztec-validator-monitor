@@ -44,9 +44,15 @@ git clone [https://github.com/skyhazee/aztec-validator-monitor.git](https://gith
 cd aztec-validator-monitor
 ```
 
-### Step 2: Set Up a Virtual Environment (Optional, but Recommended)
+Make screen
 
-Creating a virtual environment is a best practice to isolate project dependencies.
+```bash
+Screen -S aztecbot
+```
+
+### Step 2: Set Up a Virtual Environment (Recommended)
+
+Using a virtual environment is a best practice to keep project dependencies isolated.
 
 ```bash
 # Create the environment
@@ -58,63 +64,60 @@ source venv/bin/activate
 
 ### Step 3: Install Dependencies
 
-Create a `requirements.txt` file and fill it with the library list below.
-
-**`requirements.txt` file:**
-```txt
-python-telegram-bot
-python-dotenv
-cloudscraper
-apscheduler
-pytz
-```
-
-Then, install everything with a single command:
+All required packages are listed in `requirements.txt`. Install them with a single command:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Step 4: Configure Environment Variables
+### Step 4: Configure the Bot
 
-The bot needs your API token and Telegram ID to function. Create a `.env` file by copying the example.
+The bot needs a **Token** and your **Telegram User ID** to work.
 
-```bash
-cp .env.example .env
-```
+1.  **Get your Bot Token:**
+    -   Open Telegram and start a chat with [@BotFather](https://t.me/BotFather).
+    -   Send the `/newbot` command and follow the instructions to create a new bot.
+    -   **BotFather** will give you a unique token. Copy it.
 
-Now, edit the `.env` file.
+2.  **Get your Telegram User ID:**
+    -   Start a chat with [@userinfobot](https://t.me/userinfobot).
+    -   Send the `/start` command.
+    -   The bot will reply with your User ID. Copy it.
 
-```ini
-# Replace with the bot token you received from @BotFather on Telegram
-BOT_TOKEN="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+3.  **Create the `.env` file:**
+        ```bash
+        nano .env
+        ```
+    -   Now, open the `.env` file and paste your credentials:
+        ```ini
+        # Paste the token you got from @BotFather
+        BOT_TOKEN="BOT_TOKEN"
 
-# Replace with your Telegram User ID.
-# To get it, send the /start command to @userinfobot
-TELEGRAM_ID="123456789"
-```
+        # Paste your User ID you got from @userinfobot
+        TELEGRAM_ID="TELEGRAM_ID"
+        ```
 
 ### Step 5: Run the Bot
 
-Once all configurations are complete, run the bot with the following command.
+Once everything is configured, run the bot:
 
 ```bash
 python bot.py
 ```
 
-If there are no errors, your bot is now active and ready to use! You can leave this terminal running or use a tool like `screen` or `tmux` to keep the bot running after you close your SSH session.
+If you see no errors, your bot is now online! For continuous operation, it's recommended to use a process manager like `screen` or `tmux` to keep the bot running even after you disconnect from your server.
 
 ---
 
 ## 🤖 How to Use the Bot
 
-Interact with the bot using the following commands in your Telegram chat with it.
+Interact with your bot by sending these commands in your private chat with it on Telegram.
 
 -   `/start`
     Displays a welcome message and a summary of the bot's functions.
 
 -   `/add <validator_address>`
-    Adds a validator address to the monitoring list. The bot will start sending notifications for this address.
+    Adds a validator address to the monitoring list.
     *Example:* `/add 0x123abc...`
 
 -   `/remove <validator_address>`
@@ -125,12 +128,15 @@ Interact with the bot using the following commands in your Telegram chat with it
     Shows all validator addresses you are currently monitoring.
 
 -   `/check`
-    Requests a full status report for all validators on your monitoring list. The bot will send one detailed message for each validator.
+    Requests a full status report for all validators on your list. The bot will send one detailed message for each validator.
 
 ### Example Output for the `/check` Command
 
-![Bot Output Example](https://i.imgur.com/1Gv1oWd.png)
+![Bot Output Example](https://imgur.com/a/AeLipYo)
 
+### Example Output for the `Attestation`
+
+![Bot Output Example](https://imgur.com/a/GIq9u0N)
 ---
 
 ## ❤️ Support
