@@ -132,11 +132,11 @@ Interact with your bot by sending these commands in your private chat with it on
 
 ### Example Output for the `/check` Command
 
-![Bot Output Example](https://imgur.com/a/AeLipYo)
+![Bot Output Example](https://imgur.com/gallery/rank-AeLipYo)
 
 ### Example Output for the `Attestation`
 
-![Bot Output Example](https://imgur.com/a/GIq9u0N)
+![Bot Output Example](https://imgur.com/gallery/attestation-GIq9u0N)
 ---
 
 ## ❤️ Support
