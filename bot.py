@@ -55,24 +55,34 @@ def restricted(func):
 
 # --- Fungsi Helper untuk Mengelola File JSON ---
 def load_validators():
+    """Memuat daftar alamat validator dari file JSON."""
     try:
-        with open(VALIDATORS_FILE, 'r') as f: return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError): return []
+        with open(VALIDATORS_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
 def save_validators(validators):
-    with open(VALIDATORS_FILE, 'w') as f: json.dump(validators, f, indent=4)
+    """Menyimpan daftar alamat validator ke file JSON."""
+    with open(VALIDATORS_FILE, 'w') as f:
+        json.dump(validators, f, indent=4)
 
 def load_last_state():
+    """Memuat status terakhir yang tercatat untuk notifikasi."""
     try:
-        with open(LAST_STATE_FILE, 'r') as f: return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError): return {}
+        with open(LAST_STATE_FILE, 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 def save_last_state(state):
-    with open(LAST_STATE_FILE, 'w') as f: json.dump(state, f, indent=4)
+    """Menyimpan status terakhir untuk notifikasi."""
+    with open(LAST_STATE_FILE, 'w') as f:
+        json.dump(state, f, indent=4)
 
 # --- Fungsi Pengambilan Data ---
 def fetch_validator_data(address: str):
-    """Mengambil data detail untuk satu validator."""
+    """Mengambil data detail untuk satu validator dari API."""
     try:
         response = scraper.get(API_URL_DETAIL.format(address), timeout=20)
         response.raise_for_status()
@@ -87,6 +97,7 @@ def fetch_all_validators_with_cache():
     if ALL_VALIDATORS_CACHE and datetime.now() < CACHE_EXPIRATION_TIME:
         logger.info("Menggunakan daftar validator dari cache.")
         return ALL_VALIDATORS_CACHE
+    
     logger.info("Cache kosong atau kedaluwarsa. Mengambil daftar validator baru.")
     try:
         response = scraper.get(API_URL_LIST, timeout=30)
@@ -94,7 +105,7 @@ def fetch_all_validators_with_cache():
         data = response.json()
         ALL_VALIDATORS_CACHE = data
         CACHE_EXPIRATION_TIME = datetime.now() + timedelta(seconds=CACHE_DURATION_SECONDS)
-        logger.info(f"Cache berhasil diperbarui.")
+        logger.info("Cache berhasil diperbarui.")
         return data
     except Exception as e:
         logger.error(f"Gagal mengambil daftar semua validator: {e}")
@@ -102,11 +113,9 @@ def fetch_all_validators_with_cache():
 
 # --- Fungsi Pemformatan Pesan untuk /check ---
 def format_full_status_message(data: dict, rank: int | str):
-    """
-    Memformat pesan status lengkap untuk perintah /check.
-    (Versi yang sudah dimodifikasi)
-    """
-    if not data: return "Gagal mengambil data."
+    """Memformat pesan status lengkap untuk perintah /check."""
+    if not data:
+        return "Gagal mengambil data."
 
     addr = data.get('address', '')
     short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
@@ -133,13 +142,9 @@ def format_full_status_message(data: dict, rank: int | str):
     prop_rate = (prop_succeeded / total_prop * 100) if total_prop > 0 else 0
 
     epoch_part = data.get('totalParticipatingEpochs', 'N/A')
-    
-    # Hitung jumlah voting
     voting_history_count = len(data.get('votingHistory', []))
-    
     timestamp = datetime.now(WIB).strftime('%d %b %Y, %H:%M:%S WIB')
     
-    # Buat pesan dengan format baru
     message = (
         f"👑 *Rank:* {rank}\n"
         f"📊 *Status Validator:* `{short_addr}`\n"
@@ -163,15 +168,19 @@ def format_full_status_message(data: dict, rank: int | str):
     return message
 
 # --- Logika Notifikasi Otomatis ---
-def check_for_updates(context: CallbackContext):
-    bot = context.bot
+def check_for_updates(bot: Bot):
+    """Memeriksa pembaruan dan mengirim notifikasi. Menerima objek 'bot'."""
     validators = load_validators()
     last_state = load_last_state()
-    if not validators: return
-    logger.info(f"Memulai pengecekan otomatis untuk notifikasi...")
+    if not validators:
+        return
+    
+    logger.info("Memulai pengecekan otomatis untuk notifikasi...")
     for address in validators:
         data = fetch_validator_data(address)
-        if not data: continue
+        if not data:
+            continue
+            
         addr_short = f"{address[:6]}...{address[-4:]}"
         if address not in last_state:
             last_state[address] = {"latest_attestation_slot": 0, "latest_proposal_slot": 0}
@@ -185,7 +194,6 @@ def check_for_updates(context: CallbackContext):
             if slot > latest_notified_att:
                 status = att.get('status', 'N/A')
                 
-                # Tentukan judul dan emoji berdasarkan status
                 if status == 'Success':
                     title = "✍️ *Atestasi Sukses*"
                 elif status == 'Missed':
@@ -196,16 +204,20 @@ def check_for_updates(context: CallbackContext):
                 message = f"{title}\nValidator: `{addr_short}` | Slot: `#{slot}`\nHasil: {status}"
                 bot.send_message(chat_id=AUTHORIZED_USER_ID, text=message, parse_mode=ParseMode.MARKDOWN)
                 
-                if slot > max_new_att: max_new_att = slot
+                if slot > max_new_att:
+                    max_new_att = slot
         state["latest_attestation_slot"] = max_new_att
 
         # Cek Proposal Blok Baru
         latest_notified_prop = state.get("latest_proposal_slot", 0)
         max_new_prop = latest_notified_prop
         for prop in data.get('proposalHistory', []):
-            if prop.get('slot', 0) > latest_notified_prop:
-                bot.send_message(chat_id=AUTHORIZED_USER_ID, text=f"✅ *Proposal Blok Sukses!*\nValidator: `{addr_short}` | Slot: `#{prop.get('slot')}`\nStatus: {prop.get('status', 'N/A').upper()}", parse_mode=ParseMode.MARKDOWN)
-                if prop.get('slot', 0) > max_new_prop: max_new_prop = prop.get('slot')
+            slot = prop.get('slot', 0)
+            if slot > latest_notified_prop:
+                message = f"✅ *Proposal Blok Sukses!*\nValidator: `{addr_short}` | Slot: `#{slot}`\nStatus: {prop.get('status', 'N/A').upper()}"
+                bot.send_message(chat_id=AUTHORIZED_USER_ID, text=message, parse_mode=ParseMode.MARKDOWN)
+                if slot > max_new_prop:
+                    max_new_prop = slot
         state["latest_proposal_slot"] = max_new_prop
     
     save_last_state(last_state)
@@ -214,52 +226,60 @@ def check_for_updates(context: CallbackContext):
 # --- Command Handlers ---
 @restricted
 def start(update: Update, context: CallbackContext):
+    """Handler untuk perintah /start."""
     update.message.reply_html(
         "Halo! 👋 Bot ini sekarang memiliki dua fungsi:\n\n"
-        "1️⃣ <b>Notifikasi Otomatis:</b> Saya akan memberitahu Anda jika ada atestasi atau proposal blok baru.\n"
+        "1️⃣ <b>Notifikasi Otomatis:</b> Saya akan memberitahu Anda jika ada atestasi atau proposal blok baru untuk validator yang Anda pantau.\n"
         "2️⃣ <b>Pengecekan Manual:</b> Gunakan /check untuk melihat status lengkap validator Anda kapan saja.\n\n"
-        "Perintah lain: /add, /list, /remove."
+        "Gunakan perintah /add, /list, dan /remove untuk mengelola daftar pantau Anda."
     )
 
 @restricted
 def add_validator(update: Update, context: CallbackContext):
+    """Handler untuk menambah validator ke daftar pantau."""
     if not context.args:
         update.message.reply_text("Gunakan format: /add <alamat_validator>")
         return
+        
     address = context.args[0].lower()
     if not (address.startswith("0x") and len(address) == 42):
-        update.message.reply_text("Format alamat tidak valid.")
+        update.message.reply_text("Format alamat tidak valid. Harus diawali '0x' dan 42 karakter.")
         return
+        
     validators = load_validators()
     if address in validators:
-        update.message.reply_text("Alamat ini sudah ada dalam daftar.")
+        update.message.reply_text("Alamat ini sudah ada dalam daftar pantau.")
     else:
         validators.append(address)
         save_validators(validators)
-        update.message.reply_text(f"✅ Alamat berhasil ditambahkan dan akan dipantau.")
+        update.message.reply_text("✅ Alamat berhasil ditambahkan dan akan dipantau.")
 
 @restricted
 def list_validators(update: Update, context: CallbackContext):
+    """Handler untuk menampilkan semua validator yang dipantau."""
     validators = load_validators()
     if not validators:
-        update.message.reply_text("Daftar pantau kosong.")
+        update.message.reply_text("Daftar pantau kosong. Tambahkan validator dengan perintah /add.")
         return
-    message = "📜 *Daftar Validator Tersimpan:*\n\n"
+        
+    message = "📜 *Daftar Validator yang Dipantau:*\n\n"
     for i, addr in enumerate(validators, 1):
         message += f"{i}. `{addr}`\n"
     update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 def remove_validator(update: Update, context: CallbackContext):
+    """Handler untuk menghapus validator dari daftar pantau."""
     if not context.args:
         update.message.reply_text("Gunakan format: /remove <alamat_validator>")
         return
+        
     address_to_remove = context.args[0].lower()
     validators = load_validators()
     if address_to_remove in validators:
         validators.remove(address_to_remove)
         save_validators(validators)
-        update.message.reply_text(f"🗑️ Alamat berhasil dihapus.")
+        update.message.reply_text("🗑️ Alamat berhasil dihapus dari daftar pantau.")
     else:
         update.message.reply_text("Alamat tidak ditemukan dalam daftar.")
 
@@ -270,15 +290,18 @@ def check_status_command(update: Update, context: CallbackContext):
     if not validators_to_check:
         update.message.reply_text("Tidak ada validator untuk diperiksa. Tambahkan dengan `/add`.")
         return
-    update.message.reply_text(f"⏳ Mengambil data peringkat... (menggunakan cache jika tersedia)")
+    
+    update.message.reply_text("⏳ Mengambil data peringkat... (menggunakan cache jika tersedia)")
     all_validators_data = fetch_all_validators_with_cache()
     if not all_validators_data:
         update.message.reply_text("❌ Gagal mengambil daftar validator dari API.")
         return
+        
     all_validators_list = all_validators_data.get('validators', [])
     if not all_validators_list:
         update.message.reply_text("❌ Tidak menemukan daftar validator di dalam data API.")
         return
+    
     update.message.reply_text(f"✅ Data peringkat siap. Memeriksa status untuk {len(validators_to_check)} validator Anda...")
     for address in validators_to_check:
         rank = "N/A"
@@ -286,37 +309,33 @@ def check_status_command(update: Update, context: CallbackContext):
             if validator_summary.get('address', '').lower() == address.lower():
                 rank = validator_summary.get('rank', 'N/A')
                 break
+                
         detail_data = fetch_validator_data(address)
         if detail_data:
             message = format_full_status_message(detail_data, rank)
-            # Kirim pesan tanpa notifikasi web page preview untuk link
             update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
         else:
             update.message.reply_text(f"❌ Gagal mendapatkan data detail untuk `{address}`.", parse_mode=ParseMode.MARKDOWN)
 
 # --- Fungsi Utama ---
 def main():
+    """Fungsi utama untuk menjalankan bot."""
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN tidak ditemukan. Harap atur di file .env.")
         return
     
-    # Buat updater dan dispatcher di dalam main
     updater = Updater(BOT_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
-    
-    # Buat bot instance untuk digunakan dalam pengecekan awal
-    bot = Bot(token=BOT_TOKEN)
-    initial_context = CallbackContext(dispatcher)
-    initial_context.bot = bot
+    bot = dispatcher.bot
 
     # Jalankan pengecekan awal untuk menetapkan status dasar notifikasi
     logger.info("Menjalankan pengecekan awal untuk notifikasi...")
-    check_for_updates(initial_context)
+    check_for_updates(bot)
     logger.info("Status dasar notifikasi telah ditetapkan.")
     
     # Siapkan penjadwal untuk pengecekan otomatis
-    scheduler = BackgroundScheduler(timezone="Asia/Jakarta")
-    scheduler.add_job(check_for_updates, 'interval', seconds=60, args=[CallbackContext(dispatcher)])
+    scheduler = BackgroundScheduler(timezone=WIB)
+    scheduler.add_job(check_for_updates, 'interval', seconds=60, args=[bot])
     scheduler.start()
     
     # Daftarkan semua command handlers
