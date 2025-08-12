@@ -87,7 +87,7 @@ The bot needs a **Token** and your **Telegram User ID** to work.
 3.  **Create the `.env` file:**
     -   Rename the example file:
         ```bash
-        mv .env.example .env
+        nano .env
         ```
     -   Now, open the `.env` file and paste your credentials:
         ```ini
@@ -97,6 +97,7 @@ The bot needs a **Token** and your **Telegram User ID** to work.
         # Paste your User ID you got from @userinfobot
         TELEGRAM_ID="123456789"
         ```
+press ctrl+x+y to save
 
 ### Step 5: Run the Bot
 
