@@ -102,16 +102,23 @@ def fetch_all_validators_with_cache():
 
 # --- Fungsi Pemformatan Pesan untuk /check ---
 def format_full_status_message(data: dict, rank: int | str):
-    """Memformat pesan status lengkap untuk perintah /check."""
+    """
+    Memformat pesan status lengkap untuk perintah /check.
+    (Versi yang sudah dimodifikasi)
+    """
     if not data: return "Gagal mengambil data."
-    addr = data.get('address', 'N/A')
+
+    addr = data.get('address', '')
     short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
+
     status_map = {"VALIDATING": "Validating ✅"}
     status = status_map.get(data.get('status', 'UNKNOWN').upper(), f"{data.get('status', 'Unknown')} ❓")
+
     try:
         balance = float(data.get('balance', 0)) / 1e18
         total_rewards = float(data.get('unclaimedRewards', 0)) / 1e18
-    except (ValueError, TypeError): balance, total_rewards = 0.0, 0.0
+    except (ValueError, TypeError):
+        balance, total_rewards = 0.0, 0.0
     
     att_succeeded = data.get('totalAttestationsSucceeded', 0)
     att_missed = data.get('totalAttestationsMissed', 0)
@@ -126,8 +133,13 @@ def format_full_status_message(data: dict, rank: int | str):
     prop_rate = (prop_succeeded / total_prop * 100) if total_prop > 0 else 0
 
     epoch_part = data.get('totalParticipatingEpochs', 'N/A')
+    
+    # Hitung jumlah voting
+    voting_history_count = len(data.get('votingHistory', []))
+    
     timestamp = datetime.now(WIB).strftime('%d %b %Y, %H:%M:%S WIB')
     
+    # Buat pesan dengan format baru
     message = (
         f"👑 *Rank:* {rank}\n"
         f"📊 *Status Validator:* `{short_addr}`\n"
@@ -141,13 +153,13 @@ def format_full_status_message(data: dict, rank: int | str):
         f"📦 *Block Proposal Rate:* {prop_rate:.1f}%\n"
         f"    {prop_succeeded} Proposed or Mined / {prop_missed} Missed\n\n"
         f"🗓️ *Epoch Participation:* {epoch_part}\n"
+        f"🗳️ *Jumlah Voting:* {voting_history_count}\n"
+        f"-----------------------------------\n"
+        f"[Go to Validator Dashboard](https://dashtec.xyz/validators/{addr})\n\n"
+        f"🕒 *Terakhir dicek:* {timestamp}\n"
+        f"-----------------------------------\n"
+        f"Support me on [X](https://x.com/skyhazeed) | [Github](https://github.com/skyhazee)"
     )
-    voting_history = data.get('votingHistory', [])
-    if voting_history:
-        message += f"\n🗳️ *Voting History*\n"
-        for vote in voting_history:
-            message += f"    • {vote.get('info', 'N/A')}: {vote.get('status', 'N/A')}\n"
-    message += f"-----------------------------------\n🕒 *Terakhir dicek:* {timestamp}"
     return message
 
 # --- Logika Notifikasi Otomatis ---
@@ -165,7 +177,6 @@ def check_for_updates(context: CallbackContext):
             last_state[address] = {"latest_attestation_slot": 0, "latest_proposal_slot": 0}
         state = last_state[address]
         
-        # --- PERUBAHAN LOGIKA DI SINI ---
         # Cek Atestasi Baru
         latest_notified_att = state.get("latest_attestation_slot", 0)
         max_new_att = latest_notified_att
@@ -187,7 +198,6 @@ def check_for_updates(context: CallbackContext):
                 
                 if slot > max_new_att: max_new_att = slot
         state["latest_attestation_slot"] = max_new_att
-        # --- AKHIR PERUBAHAN LOGIKA ---
 
         # Cek Proposal Blok Baru
         latest_notified_prop = state.get("latest_proposal_slot", 0)
@@ -279,7 +289,8 @@ def check_status_command(update: Update, context: CallbackContext):
         detail_data = fetch_validator_data(address)
         if detail_data:
             message = format_full_status_message(detail_data, rank)
-            update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+            # Kirim pesan tanpa notifikasi web page preview untuk link
+            update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
         else:
             update.message.reply_text(f"❌ Gagal mendapatkan data detail untuk `{address}`.", parse_mode=ParseMode.MARKDOWN)
 
@@ -288,12 +299,19 @@ def main():
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN tidak ditemukan. Harap atur di file .env.")
         return
+    
+    # Buat updater dan dispatcher di dalam main
     updater = Updater(BOT_TOKEN, use_context=True)
     dispatcher = updater.dispatcher
     
+    # Buat bot instance untuk digunakan dalam pengecekan awal
+    bot = Bot(token=BOT_TOKEN)
+    initial_context = CallbackContext(dispatcher)
+    initial_context.bot = bot
+
     # Jalankan pengecekan awal untuk menetapkan status dasar notifikasi
     logger.info("Menjalankan pengecekan awal untuk notifikasi...")
-    check_for_updates(CallbackContext(dispatcher))
+    check_for_updates(initial_context)
     logger.info("Status dasar notifikasi telah ditetapkan.")
     
     # Siapkan penjadwal untuk pengecekan otomatis
