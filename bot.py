@@ -42,11 +42,6 @@ API_URL_LIST = "https://dashtec.xyz/api/validators?"
 # Zona Waktu (Waktu Indonesia Barat)
 WIB = pytz.timezone('Asia/Jakarta')
 
-# --- Konfigurasi Caching untuk Peringkat ---
-CACHE_DURATION_SECONDS = 900  # 15 menit
-ALL_VALIDATORS_CACHE = None
-CACHE_EXPIRATION_TIME = None
-
 # Buat instance scraper yang akan digunakan kembali untuk melewati proteksi Cloudflare
 scraper = cloudscraper.create_scraper()
 
@@ -103,27 +98,28 @@ def fetch_validator_data(address: str):
         logger.error(f"Gagal mengambil data detail untuk {address}: {e}")
         return None
 
-def fetch_all_validators_with_cache():
-    """Mengambil daftar semua validator menggunakan mekanisme cache."""
-    global ALL_VALIDATORS_CACHE, CACHE_EXPIRATION_TIME
-    now = datetime.now()
-    if ALL_VALIDATORS_CACHE and CACHE_EXPIRATION_TIME and now < CACHE_EXPIRATION_TIME:
-        logger.info("Menggunakan daftar validator dari cache.")
-        return ALL_VALIDATORS_CACHE
-    
-    logger.info("Cache kosong atau kedaluwarsa. Mengambil daftar validator baru.")
+def fetch_validator_rank_and_score(address: str):
+    """Mengambil peringkat dan skor untuk satu validator menggunakan parameter search."""
     try:
-        response = scraper.get(API_URL_LIST, timeout=30)
+        search_url = f"{API_URL_LIST}search={address}"
+        response = scraper.get(search_url, timeout=20)
         response.raise_for_status()
         data = response.json()
-        ALL_VALIDATORS_CACHE = data
-        CACHE_EXPIRATION_TIME = now + timedelta(seconds=CACHE_DURATION_SECONDS)
-        logger.info("Cache berhasil diperbarui.")
-        return data
+        
+        validators_list = data.get('validators', [])
+        if not validators_list:
+            logger.warning(f"Validator {address} tidak ditemukan melalui pencarian API.")
+            return "N/A", "N/A"
+            
+        validator_info = validators_list[0]
+        rank = validator_info.get('rank', 'N/A')
+        score = validator_info.get('performanceScore', 'N/A')
+        
+        return rank, score
+        
     except Exception as e:
-        logger.error(f"Gagal mengambil daftar semua validator: {e}")
-        # Jika gagal, jangan hapus cache lama agar bot tetap bisa berjalan
-        return ALL_VALIDATORS_CACHE
+        logger.error(f"Gagal mengambil rank/score untuk {address}: {e}")
+        return "N/A", "N/A"
 
 # --- Fungsi Pemformatan Pesan untuk /check ---
 def format_full_status_message(data: dict, rank: int | str, score: float | str) -> str:
@@ -335,31 +331,15 @@ def check_status_command(update: Update, context: CallbackContext):
         update.message.reply_text("Tidak ada validator untuk diperiksa. Tambahkan dengan `/add`.")
         return
     
-    sent_message = update.message.reply_text("⏳ Mengambil data peringkat...")
-    all_validators_data = fetch_all_validators_with_cache()
-    
-    if not all_validators_data:
-        sent_message.edit_text("❌ Gagal mengambil daftar validator dari API. Peringkat tidak akan tersedia.")
-        all_validators_list = []
-    else:
-        all_validators_list = all_validators_data.get('validators', [])
-        if not all_validators_list:
-            sent_message.edit_text("❌ Tidak menemukan daftar validator di data API. Peringkat tidak akan tersedia.")
-        else:
-            sent_message.edit_text(f"✅ Data peringkat siap. Memeriksa status untuk {len(validators_to_check)} validator Anda...")
+    update.message.reply_text(f"⏳ Memeriksa status untuk {len(validators_to_check)} validator Anda...")
 
     for address in validators_to_check:
-        rank = "N/A"
-        score = "N/A"
-        if all_validators_list:
-            # Cari peringkat dan skor validator
-            for validator_summary in all_validators_list:
-                if validator_summary.get('address', '').lower() == address.lower():
-                    rank = validator_summary.get('rank', 'N/A')
-                    score = validator_summary.get('score', 'N/A')
-                    break
+        # Mengambil rank dan score menggunakan metode pencarian yang lebih efisien
+        rank, score = fetch_validator_rank_and_score(address)
         
+        # Mengambil data detail validator
         detail_data = fetch_validator_data(address)
+        
         if detail_data:
             message = format_full_status_message(detail_data, rank, score)
             update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
