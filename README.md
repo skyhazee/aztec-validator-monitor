@@ -55,10 +55,8 @@ screen -S aztecbot
 Using a virtual environment is a best practice to keep project dependencies isolated.
 
 ```bash
-# Create the environment
 python3 -m venv venv
 
-# Activate the environment
 source venv/bin/activate
 ```
 
@@ -91,10 +89,7 @@ The bot needs a **Token** and your **Telegram User ID** to work.
         ```
     -   Now, open the `.env` file and paste your credentials:
         ```ini
-        # Paste the token you got from @BotFather
         BOT_TOKEN="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-
-        # Paste your User ID you got from @userinfobot
         TELEGRAM_ID="123456789"
         ```
 press ctrl+x+y to save
@@ -136,6 +131,7 @@ Interact with your bot by sending these commands in your private chat with it on
 
 ```
 👑 Rank: 1
+🎯 Score: 0.00
 📊 Status Validator: 0x...
 Validating ✅
 💰 Saldo: 100.00 STK
