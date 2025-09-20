@@ -373,7 +373,13 @@ def main():
         logger.error("BOT_TOKEN tidak ditemukan. Harap atur di file .env.")
         return
     
-    updater = Updater(BOT_TOKEN, use_context=True)
+    # Menambahkan timeout untuk koneksi ke API Telegram
+    request_kwargs = {
+        'connect_timeout': 20.0,
+        'read_timeout': 20.0,
+    }
+    updater = Updater(BOT_TOKEN, use_context=True, request_kwargs=request_kwargs)
+    
     dispatcher = updater.dispatcher
     bot = dispatcher.bot
 
