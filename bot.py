@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import json
 import logging
@@ -12,7 +13,10 @@ from telegram.ext import Updater, CommandHandler, CallbackContext
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # --- Konfigurasi Awal ---
+# Memuat variabel dari file .env
 load_dotenv()
+
+# Mengatur logging untuk memantau aktivitas bot
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -21,15 +25,21 @@ logger = logging.getLogger(__name__)
 # --- Variabel Global & Konstanta ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 try:
+    # Pastikan TELEGRAM_ID adalah integer
     AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_ID"))
 except (ValueError, TypeError):
-    logger.error("TELEGRAM_ID tidak valid atau tidak ditemukan di .env file.")
+    logger.error("TELEGRAM_ID tidak valid atau tidak ditemukan di file .env.")
     exit()
 
+# Nama file untuk menyimpan data
 VALIDATORS_FILE = "validators.json"
 LAST_STATE_FILE = "last_state.json"
+
+# URL API
 API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
 API_URL_LIST = "https://dashtec.xyz/api/validators?"
+
+# Zona Waktu (Waktu Indonesia Barat)
 WIB = pytz.timezone('Asia/Jakarta')
 
 # --- Konfigurasi Caching untuk Peringkat ---
@@ -37,7 +47,7 @@ CACHE_DURATION_SECONDS = 900  # 15 menit
 ALL_VALIDATORS_CACHE = None
 CACHE_EXPIRATION_TIME = None
 
-# Buat instance scraper yang akan kita gunakan kembali
+# Buat instance scraper yang akan digunakan kembali untuk melewati proteksi Cloudflare
 scraper = cloudscraper.create_scraper()
 
 # --- Dekorator untuk Otorisasi ---
@@ -47,38 +57,40 @@ def restricted(func):
     def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
         user_id = update.effective_user.id
         if user_id != AUTHORIZED_USER_ID:
-            logger.warning(f"Akses tidak sah ditolak untuk {user_id}.")
+            logger.warning(f"Akses tidak sah ditolak untuk user ID: {user_id}.")
             update.message.reply_text("⛔ Anda tidak diizinkan menggunakan bot ini.")
             return
         return func(update, context, *args, **kwargs)
     return wrapped
 
 # --- Fungsi Helper untuk Mengelola File JSON ---
-def load_validators():
-    """Memuat daftar alamat validator dari file JSON."""
+def load_json_file(filename: str, default_value=None):
+    """Fungsi generik untuk memuat data dari file JSON."""
+    if default_value is None:
+        default_value = []
     try:
-        with open(VALIDATORS_FILE, 'r') as f:
+        with open(filename, 'r', encoding='utf-8') as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return []
+        return default_value
+
+def save_json_file(filename: str, data):
+    """Fungsi generik untuk menyimpan data ke file JSON."""
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4)
+
+# Menggunakan fungsi generik untuk file spesifik
+def load_validators():
+    return load_json_file(VALIDATORS_FILE, [])
 
 def save_validators(validators):
-    """Menyimpan daftar alamat validator ke file JSON."""
-    with open(VALIDATORS_FILE, 'w') as f:
-        json.dump(validators, f, indent=4)
+    save_json_file(VALIDATORS_FILE, validators)
 
 def load_last_state():
-    """Memuat status terakhir yang tercatat untuk notifikasi."""
-    try:
-        with open(LAST_STATE_FILE, 'r') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return load_json_file(LAST_STATE_FILE, {})
 
 def save_last_state(state):
-    """Menyimpan status terakhir untuk notifikasi."""
-    with open(LAST_STATE_FILE, 'w') as f:
-        json.dump(state, f, indent=4)
+    save_json_file(LAST_STATE_FILE, state)
 
 # --- Fungsi Pengambilan Data ---
 def fetch_validator_data(address: str):
@@ -94,7 +106,8 @@ def fetch_validator_data(address: str):
 def fetch_all_validators_with_cache():
     """Mengambil daftar semua validator menggunakan mekanisme cache."""
     global ALL_VALIDATORS_CACHE, CACHE_EXPIRATION_TIME
-    if ALL_VALIDATORS_CACHE and datetime.now() < CACHE_EXPIRATION_TIME:
+    now = datetime.now()
+    if ALL_VALIDATORS_CACHE and CACHE_EXPIRATION_TIME and now < CACHE_EXPIRATION_TIME:
         logger.info("Menggunakan daftar validator dari cache.")
         return ALL_VALIDATORS_CACHE
     
@@ -104,16 +117,17 @@ def fetch_all_validators_with_cache():
         response.raise_for_status()
         data = response.json()
         ALL_VALIDATORS_CACHE = data
-        CACHE_EXPIRATION_TIME = datetime.now() + timedelta(seconds=CACHE_DURATION_SECONDS)
+        CACHE_EXPIRATION_TIME = now + timedelta(seconds=CACHE_DURATION_SECONDS)
         logger.info("Cache berhasil diperbarui.")
         return data
     except Exception as e:
         logger.error(f"Gagal mengambil daftar semua validator: {e}")
-        return None
+        # Jika gagal, jangan hapus cache lama agar bot tetap bisa berjalan
+        return ALL_VALIDATORS_CACHE
 
 # --- Fungsi Pemformatan Pesan untuk /check ---
-def format_full_status_message(data: dict, rank: int | str):
-    """Memformat pesan status lengkap untuk perintah /check."""
+def format_full_status_message(data: dict, rank: int | str, score: float | str) -> str:
+    """Memformat pesan status lengkap sesuai dengan format yang diminta."""
     if not data:
         return "Gagal mengambil data."
 
@@ -122,6 +136,11 @@ def format_full_status_message(data: dict, rank: int | str):
 
     status_map = {"VALIDATING": "Validating ✅"}
     status = status_map.get(data.get('status', 'UNKNOWN').upper(), f"{data.get('status', 'Unknown')} ❓")
+
+    try:
+        score_formatted = f"{float(score):.2f}" if score != "N/A" else "N/A"
+    except (ValueError, TypeError):
+        score_formatted = score if score is not None else "N/A"
 
     try:
         balance = float(data.get('balance', 0)) / 1e18
@@ -147,6 +166,7 @@ def format_full_status_message(data: dict, rank: int | str):
     
     message = (
         f"👑 *Rank:* {rank}\n"
+        f"🎯 *Score:* {score_formatted}\n"
         f"📊 *Status Validator:* `{short_addr}`\n"
         f"{status}\n\n"
         f"💰 *Saldo:* {balance:.2f} STK\n"
@@ -169,7 +189,7 @@ def format_full_status_message(data: dict, rank: int | str):
 
 # --- Logika Notifikasi Otomatis ---
 def check_for_updates(bot: Bot):
-    """Memeriksa pembaruan dan mengirim notifikasi. Menerima objek 'bot'."""
+    """Memeriksa pembaruan dan mengirim notifikasi."""
     validators = load_validators()
     last_state = load_last_state()
     if not validators:
@@ -183,7 +203,11 @@ def check_for_updates(bot: Bot):
             
         addr_short = f"{address[:6]}...{address[-4:]}"
         if address not in last_state:
-            last_state[address] = {"latest_attestation_slot": 0, "latest_proposal_slot": 0}
+            # Inisialisasi state jika validator baru ditambahkan
+            last_state[address] = {
+                "latest_attestation_slot": 0, 
+                "latest_proposal_slot": 0
+            }
         state = last_state[address]
         
         # Cek Atestasi Baru
@@ -214,7 +238,15 @@ def check_for_updates(bot: Bot):
         for prop in data.get('proposalHistory', []):
             slot = prop.get('slot', 0)
             if slot > latest_notified_prop:
-                message = f"✅ *Proposal Blok Sukses!*\nValidator: `{addr_short}` | Slot: `#{slot}`\nStatus: {prop.get('status', 'N/A').upper()}"
+                status_prop = prop.get('status', 'N/A').upper()
+                if status_prop == 'MINED':
+                    title = "✅ *Blok Berhasil di-Mine*"
+                elif status_prop == 'PROPOSED':
+                    title = "📦 *Blok Berhasil Diajukan*"
+                else:
+                    title = "❓ *Update Proposal Blok*"
+
+                message = f"{title}!\nValidator: `{addr_short}` | Slot: `#{slot}`"
                 bot.send_message(chat_id=AUTHORIZED_USER_ID, text=message, parse_mode=ParseMode.MARKDOWN)
                 if slot > max_new_prop:
                     max_new_prop = slot
@@ -228,10 +260,15 @@ def check_for_updates(bot: Bot):
 def start(update: Update, context: CallbackContext):
     """Handler untuk perintah /start."""
     update.message.reply_html(
-        "Halo! 👋 Bot ini sekarang memiliki dua fungsi:\n\n"
-        "1️⃣ <b>Notifikasi Otomatis:</b> Saya akan memberitahu Anda jika ada atestasi atau proposal blok baru untuk validator yang Anda pantau.\n"
-        "2️⃣ <b>Pengecekan Manual:</b> Gunakan /check untuk melihat status lengkap validator Anda kapan saja.\n\n"
-        "Gunakan perintah /add, /list, dan /remove untuk mengelola daftar pantau Anda."
+        "Halo! 👋 Bot ini memonitor validator Aztec Anda.\n\n"
+        "<b>Fitur Utama:</b>\n"
+        "1️⃣ <b>Notifikasi Otomatis:</b> Dapat notifikasi untuk atestasi & proposal blok baru.\n"
+        "2️⃣ <b>Pengecekan Manual:</b> Gunakan /check untuk melihat status lengkap validator.\n\n"
+        "<b>Perintah yang tersedia:</b>\n"
+        "/add <code>&lt;alamat_validator&gt;</code> - Menambah validator.\n"
+        "/remove <code>&lt;alamat_validator&gt;</code> - Menghapus validator.\n"
+        "/list - Melihat daftar validator yang dipantau.\n"
+        "/check - Memeriksa status semua validator."
     )
 
 @restricted
@@ -276,9 +313,16 @@ def remove_validator(update: Update, context: CallbackContext):
         
     address_to_remove = context.args[0].lower()
     validators = load_validators()
+    last_state = load_last_state()
+
     if address_to_remove in validators:
         validators.remove(address_to_remove)
+        # Hapus juga state notifikasinya
+        if address_to_remove in last_state:
+            del last_state[address_to_remove]
+        
         save_validators(validators)
+        save_last_state(last_state)
         update.message.reply_text("🗑️ Alamat berhasil dihapus dari daftar pantau.")
     else:
         update.message.reply_text("Alamat tidak ditemukan dalam daftar.")
@@ -291,28 +335,33 @@ def check_status_command(update: Update, context: CallbackContext):
         update.message.reply_text("Tidak ada validator untuk diperiksa. Tambahkan dengan `/add`.")
         return
     
-    update.message.reply_text("⏳ Mengambil data peringkat... (menggunakan cache jika tersedia)")
+    sent_message = update.message.reply_text("⏳ Mengambil data peringkat...")
     all_validators_data = fetch_all_validators_with_cache()
-    if not all_validators_data:
-        update.message.reply_text("❌ Gagal mengambil daftar validator dari API.")
-        return
-        
-    all_validators_list = all_validators_data.get('validators', [])
-    if not all_validators_list:
-        update.message.reply_text("❌ Tidak menemukan daftar validator di dalam data API.")
-        return
     
-    update.message.reply_text(f"✅ Data peringkat siap. Memeriksa status untuk {len(validators_to_check)} validator Anda...")
+    if not all_validators_data:
+        sent_message.edit_text("❌ Gagal mengambil daftar validator dari API. Peringkat tidak akan tersedia.")
+        all_validators_list = []
+    else:
+        all_validators_list = all_validators_data.get('validators', [])
+        if not all_validators_list:
+            sent_message.edit_text("❌ Tidak menemukan daftar validator di data API. Peringkat tidak akan tersedia.")
+        else:
+            sent_message.edit_text(f"✅ Data peringkat siap. Memeriksa status untuk {len(validators_to_check)} validator Anda...")
+
     for address in validators_to_check:
         rank = "N/A"
-        for validator_summary in all_validators_list:
-            if validator_summary.get('address', '').lower() == address.lower():
-                rank = validator_summary.get('rank', 'N/A')
-                break
-                
+        score = "N/A"
+        if all_validators_list:
+            # Cari peringkat dan skor validator
+            for validator_summary in all_validators_list:
+                if validator_summary.get('address', '').lower() == address.lower():
+                    rank = validator_summary.get('rank', 'N/A')
+                    score = validator_summary.get('score', 'N/A')
+                    break
+        
         detail_data = fetch_validator_data(address)
         if detail_data:
-            message = format_full_status_message(detail_data, rank)
+            message = format_full_status_message(detail_data, rank, score)
             update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
         else:
             update.message.reply_text(f"❌ Gagal mendapatkan data detail untuk `{address}`.", parse_mode=ParseMode.MARKDOWN)
@@ -329,13 +378,13 @@ def main():
     bot = dispatcher.bot
 
     # Jalankan pengecekan awal untuk menetapkan status dasar notifikasi
-    logger.info("Menjalankan pengecekan awal untuk notifikasi...")
+    logger.info("Menjalankan pengecekan awal untuk inisialisasi status notifikasi...")
     check_for_updates(bot)
     logger.info("Status dasar notifikasi telah ditetapkan.")
     
     # Siapkan penjadwal untuk pengecekan otomatis
     scheduler = BackgroundScheduler(timezone=WIB)
-    scheduler.add_job(check_for_updates, 'interval', seconds=60, args=[bot])
+    scheduler.add_job(check_for_updates, 'interval', seconds=60, args=[bot], id="update_check_job")
     scheduler.start()
     
     # Daftarkan semua command handlers
@@ -346,8 +395,9 @@ def main():
     dispatcher.add_handler(CommandHandler("check", check_status_command))
     
     updater.start_polling()
-    logger.info("Bot berhasil dijalankan dengan notifikasi otomatis dan perintah /check!")
+    logger.info("Bot berhasil dijalankan!")
     updater.idle()
 
 if __name__ == '__main__':
     main()
+
