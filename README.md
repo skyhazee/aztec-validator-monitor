@@ -40,7 +40,7 @@ Follow these steps to get your own bot up and running.
 Open a terminal on your server and clone this repository.
 
 ```bash
-git clone [https://github.com/skyhazee/aztec-validator-monitor.git](https://github.com/skyhazee/aztec-validator-monitor.git)
+git clone https://github.com/skyhazee/aztec-validator-monitor.git
 cd aztec-validator-monitor
 ```
 
