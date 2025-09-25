@@ -248,18 +248,23 @@ def check_for_updates(bot: Bot):
                     max_new_att = slot
         state["latest_attestation_slot"] = max_new_att
 
-        # Cek Proposal Blok Baru
+        # Cek Proposal Blok Baru dengan logika yang diperbarui
         latest_notified_prop = state.get("latest_proposal_slot", 0)
         max_new_prop = latest_notified_prop
         for prop in data.get('proposalHistory', []):
             slot = prop.get('slot', 0)
             if slot > latest_notified_prop:
-                status_prop = prop.get('status', 'N/A').upper()
-                if status_prop == 'MINED':
-                    title = "✅ *Blok Berhasil di-Mine*"
-                elif status_prop == 'PROPOSED':
+                status_prop = prop.get('status', '').lower() # Menggunakan .lower() untuk perbandingan case-insensitive
+                
+                if status_prop == 'block-proposed':
                     title = "📦 *Blok Berhasil Diajukan*"
+                elif status_prop == 'block-mined':
+                    title = "✅ *Blok Berhasil di-Mine*"
+                elif status_prop == 'block-missed':
+                    title = "❌ *Proposal Blok Terlewat*"
                 else:
+                    # Mencatat status yang tidak dikenal untuk debugging
+                    logger.warning(f"Status proposal tidak dikenal: '{prop.get('status')}' untuk validator {addr_short}")
                     title = "❓ *Update Proposal Blok*"
 
                 message = f"{title}!\nValidator: `{addr_short}` | Slot: `#{slot}`"
