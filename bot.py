@@ -4,6 +4,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from functools import wraps
+import time
 
 import cloudscraper
 import pytz
@@ -44,6 +45,21 @@ WIB = pytz.timezone('Asia/Jakarta')
 
 # Buat instance scraper yang akan digunakan kembali untuk melewati proteksi Cloudflare
 scraper = cloudscraper.create_scraper()
+
+# Menambahkan headers browser untuk meniru request yang lebih nyata dan menghindari blokir Cloudflare
+BROWSER_HEADERS = {
+    'accept': '*/*',
+    'accept-language': 'en-US,en;q=0.9,id;q=0.8',
+    'priority': 'u=1, i',
+    'sec-ch-ua': '"Chromium";v="140", "Not=A?Brand";v="24", "Google Chrome";v="140"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+}
+
 
 # --- Dekorator untuk Otorisasi ---
 def restricted(func):
@@ -91,7 +107,9 @@ def save_last_state(state):
 def fetch_validator_data(address: str):
     """Mengambil data detail untuk satu validator dari API."""
     try:
-        response = scraper.get(API_URL_DETAIL.format(address), timeout=20)
+        headers = BROWSER_HEADERS.copy()
+        headers['referer'] = f"https://dashtec.xyz/validators/{address}"
+        response = scraper.get(API_URL_DETAIL.format(address), timeout=30, headers=headers)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -101,8 +119,10 @@ def fetch_validator_data(address: str):
 def fetch_validator_rank_and_score(address: str):
     """Mengambil peringkat dan skor untuk satu validator menggunakan parameter search."""
     try:
+        headers = BROWSER_HEADERS.copy()
+        headers['referer'] = 'https://dashtec.xyz/validators'
         search_url = f"{API_URL_LIST}search={address}"
-        response = scraper.get(search_url, timeout=20)
+        response = scraper.get(search_url, timeout=30, headers=headers)
         response.raise_for_status()
         data = response.json()
         
@@ -333,7 +353,11 @@ def check_status_command(update: Update, context: CallbackContext):
     
     update.message.reply_text(f"⏳ Memeriksa status untuk {len(validators_to_check)} validator Anda...")
 
-    for address in validators_to_check:
+    for i, address in enumerate(validators_to_check):
+        # Memberi jeda 1 detik antar request untuk tidak membebani server API
+        if i > 0:
+            time.sleep(1)
+
         # Mengambil rank dan score menggunakan metode pencarian yang lebih efisien
         rank, score = fetch_validator_rank_and_score(address)
         
