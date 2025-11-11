@@ -15,7 +15,7 @@ from telegram import Update, ParseMode, Bot
 from telegram.ext import Updater, CommandHandler, CallbackContext
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# --- Konfigurasi Awal ---
+# --- Boot ---
 load_dotenv()
 
 logging.basicConfig(
@@ -27,23 +27,24 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 try:
     AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_ID"))
 except (ValueError, TypeError):
-    logger.error("TELEGRAM_ID tidak valid atau tidak ditemukan di file .env.")
+    logger.error("TELEGRAM_ID is invalid or missing in .env.")
     exit()
 
 VALIDATORS_FILE = "validators.json"
 LAST_STATE_FILE = "last_state.json"
 
-# API utama (validator) & testnet queue
+# Main validator & testnet queue APIs
 API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
 API_URL_LIST = "https://dashtec.xyz/api/validators?"
 
 QUEUE_API_URL = "https://testnet.dashtec.xyz/api/sequencers/queue"
 QUEUE_STATS_URL = "https://testnet.dashtec.xyz/api/sequencers/queue/stats"
 
-# Default estimasi kalau stats tidak tersedia
+# Defaults for ETA if stats are unavailable
 DEFAULT_EPOCH_MINUTES = 38
 DEFAULT_VALIDATORS_PER_EPOCH = 4
 
+# Timezone
 WIB = pytz.timezone('Asia/Jakarta')
 
 scraper = cloudscraper.create_scraper()
@@ -61,15 +62,15 @@ BROWSER_HEADERS = {
     'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
 }
 
-# ----------------- Utils State & Auth -----------------
+# ----------------- Auth & State Utils -----------------
 def restricted(func):
     @wraps(func)
     def wrapped(update: Update, context: CallbackContext, *args, **kwargs):
         user_id = update.effective_user.id
         if user_id != AUTHORIZED_USER_ID:
-            logger.warning(f"Akses tidak sah ditolak untuk user ID: {user_id}.")
+            logger.warning(f"Unauthorized access denied for user ID: {user_id}.")
             if update.message:
-                update.message.reply_text("⛔ Anda tidak diizinkan menggunakan bot ini.")
+                update.message.reply_text("⛔ You are not allowed to use this bot.")
             return
         return func(update, context, *args, **kwargs)
     return wrapped
@@ -99,7 +100,7 @@ def load_last_state():
 def save_last_state(state):
     save_json_file(LAST_STATE_FILE, state)
 
-# ----------------- API Main Validator -----------------
+# ----------------- Main Validator API -----------------
 def fetch_validator_data(address: str):
     try:
         headers = BROWSER_HEADERS.copy()
@@ -108,7 +109,7 @@ def fetch_validator_data(address: str):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        logger.error(f"Gagal ambil detail {address}: {e}")
+        logger.error(f"Failed to fetch details for {address}: {e}")
         return None
 
 def fetch_validator_rank_and_score(address: str):
@@ -121,19 +122,19 @@ def fetch_validator_rank_and_score(address: str):
         data = response.json()
         validators_list = data.get('validators', []) or data.get('data', []) or []
         if not validators_list:
-            logger.warning(f"Validator {address} tidak ditemukan via search API.")
+            logger.warning(f"Validator {address} not found via search API.")
             return "N/A", "N/A"
         validator_info = validators_list[0]
         rank = validator_info.get('rank', 'N/A')
         score = validator_info.get('performanceScore', 'N/A')
         return rank, score
     except Exception as e:
-        logger.error(f"Gagal ambil rank/score {address}: {e}")
+        logger.error(f"Failed to fetch rank/score for {address}: {e}")
         return "N/A", "N/A"
 
-# ----------------- API Queue (Testnet) -----------------
+# ----------------- Queue API (Testnet) -----------------
 def fetch_queue_stats():
-    """Ambil statistik queue; jika tidak ada field-nya, pakai default."""
+    """Get queue stats; fallback to defaults if missing."""
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/queue'
@@ -161,11 +162,11 @@ def fetch_queue_stats():
             validators_per_epoch = DEFAULT_VALIDATORS_PER_EPOCH
         return {"epoch_minutes": epoch_minutes, "validators_per_epoch": validators_per_epoch}
     except Exception as e:
-        logger.warning(f"Gagal fetch queue stats, pakai default: {e}")
+        logger.warning(f"Failed to fetch queue stats, using defaults: {e}")
         return {"epoch_minutes": DEFAULT_EPOCH_MINUTES, "validators_per_epoch": DEFAULT_VALIDATORS_PER_EPOCH}
 
 def _parse_position_value(val):
-    """Terima angka / string '#146' dan kembalikan int 146 bila mungkin."""
+    """Accept int or string like '#146' -> int 146."""
     if val is None:
         return None
     if isinstance(val, int):
@@ -180,21 +181,20 @@ def _parse_position_value(val):
 
 def fetch_queue_info(address: str):
     """
-    Cari posisi & status dalam antrian untuk 1 alamat.
-    Struktur API (contoh):
+    Find queue position & status for one address.
+    Expected structure:
     {
-      "validatorsInQueue":[{"position":146, "index":"#146", "address":"..."}],
+      "validatorsInQueue":[{"position":146,"index":"#146","address":"..."}],
       "filteredCount":1,
-      "pagination":{...},
-      "status":"ok"
+      ...
     }
-    return: {'position': int|None, 'status': 'in-queue'|'not-in-queue', 'raw': dict, 'found': bool}
+    Return: {'position': int|None, 'status': 'in-queue'|'not-in-queue', 'raw': dict, 'found': bool}
     """
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/queue'
 
-        # 1) via search
+        # 1) search (fast path)
         params = {"page": 1, "limit": 10, "search": address}
         r = scraper.get(QUEUE_API_URL, headers=headers, params=params, timeout=20)
         r.raise_for_status()
@@ -213,7 +213,7 @@ def fetch_queue_info(address: str):
         if filtered_count == 0:
             return {"position": None, "status": "not-in-queue", "raw": {}, "found": False}
 
-        # 2) fallback: sapu halaman (tanpa search)
+        # 2) fallback: sweep pages (if search fails to match)
         page = 1
         limit = 200
         total_pages = 1
@@ -245,12 +245,12 @@ def fetch_queue_info(address: str):
         return {"position": None, "status": "not-in-queue", "raw": {}, "found": False}
 
     except Exception as e:
-        logger.error(f"Gagal fetch queue {address}: {e}")
+        logger.error(f"Failed to fetch queue for {address}: {e}")
         return {"position": None, "status": None, "raw": {}, "found": False}
 
-# ---------- Estimasi: tampilkan day/hour (tanpa menit) ----------
+# ---------- ETA formatting: day/hour (no minutes) ----------
 def _format_days_hours_from_minutes(total_minutes: int) -> str:
-    """Bulatkan ke jam terdekat (ceil), lalu render 'X days Y hours' / 'X hours'."""
+    """Ceil to the nearest hour, render as 'X days Y hours' or 'X hours'."""
     if total_minutes <= 0:
         return "0 hours"
     hours = math.ceil(total_minutes / 60.0)
@@ -266,7 +266,7 @@ def _format_days_hours_from_minutes(total_minutes: int) -> str:
 def estimate_activation_time(position: int | None, stats: dict):
     """Return (eta_text_human, eta_timestamp_str, epochs_wait)."""
     if position is None or position <= 0:
-        return ("Aktif (tidak dalam antrian)", "-", 0)
+        return ("Active (not in queue)", "-", 0)
     vpe = stats.get("validators_per_epoch", DEFAULT_VALIDATORS_PER_EPOCH)
     epoch_min = stats.get("epoch_minutes", DEFAULT_EPOCH_MINUTES)
     epochs_wait = math.ceil((position - 1) / max(vpe, 1))
@@ -276,10 +276,10 @@ def estimate_activation_time(position: int | None, stats: dict):
     human = _format_days_hours_from_minutes(minutes_wait)
     return (human, eta_time.strftime('%d %b %Y, %H:%M WIB'), epochs_wait)
 
-# ----------------- Format Status (Main) -----------------
+# ----------------- Status message (Main) -----------------
 def format_full_status_message(data: dict, rank: int | str, score: float | str) -> str:
     if not data:
-        return "Gagal mengambil data."
+        return "Failed to get data."
 
     addr = data.get('address', '')
     short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
@@ -317,39 +317,39 @@ def format_full_status_message(data: dict, rank: int | str, score: float | str) 
     message = (
         f"👑 *Rank:* {rank}\n"
         f"🎯 *Score:* {score_formatted}\n"
-        f"📊 *Status Validator:* `{short_addr}`\n"
+        f"📊 *Validator:* `{short_addr}`\n"
         f"{status}\n\n"
-        f"💰 *Saldo:* {balance:.2f} STK\n"
+        f"💰 *Balance:* {balance:.2f} STK\n"
         f"🏆 *Total Rewards:* {total_rewards:.2f} STK\n"
         f"-----------------------------------\n"
-        f"✨ *Performance Metrics*\n\n"
+        f"✨ *Performance*\n\n"
         f"🛡️ *Attestation Rate:* {att_rate:.1f}%\n"
         f"    {att_succeeded} Succeeded / {att_missed} Missed\n\n"
         f"📦 *Block Proposal Rate:* {prop_rate:.1f}%\n"
         f"    {prop_succeeded} Proposed or Mined / {prop_missed}\n\n"
         f"🗓️ *Epoch Participation:* {epoch_part}\n"
-        f"🗳️ *Jumlah Voting:* {voting_history_count}\n"
+        f"🗳️ *Voting Count:* {voting_history_count}\n"
         f"-----------------------------------\n"
-        f"[Go to Validator Dashboard](https://dashtec.xyz/validators/{addr})\n\n"
-        f"🕒 *Terakhir dicek:* {timestamp}\n"
+        f"[Open on Dashboard](https://dashtec.xyz/validators/{addr})\n\n"
+        f"🕒 *Last checked:* {timestamp}\n"
         f"-----------------------------------\n"
         f"Support me on [X](https://x.com/skyhazeed) | [Github](https://github.com/skyhazee)"
     )
     return message
 
-# ----------------- Notifikasi Otomatis -----------------
+# ----------------- Auto Notifications -----------------
 def check_for_updates(bot: Bot):
     """
-    Attestation/Proposal (mainnet dashboard) + Queue Activation (testnet).
-    Anti-false-positive: perlu 2 konfirmasi berturut-turut sebelum kirim notif 'activated'.
+    Attestation/Proposal (main dashboard) + Queue Activation (testnet).
+    Anti false-positive: require 2 consecutive confirmations before sending 'activated' notification.
     """
     validators = load_validators()
     last_state = load_last_state()
     if not validators:
         return
     
-    logger.info("Pengecekan otomatis dimulai...")
-    _ = fetch_queue_stats()  # masih dipakai utk masa depan, saat ini notif activated berdasarkan status queue
+    logger.info("Auto check started...")
+    _ = fetch_queue_stats()  # Reserved for future use
 
     for address in validators:
         state = last_state.get(address, {
@@ -360,7 +360,7 @@ def check_for_updates(bot: Bot):
             "activation_confirmations": 0
         })
 
-        # --- 1) Validator main data ---
+        # --- 1) Main validator data ---
         data = fetch_validator_data(address)
         if data:
             # Attestation
@@ -372,12 +372,12 @@ def check_for_updates(bot: Bot):
                     status = att.get('status', 'N/A')
                     short_addr = f"{address[:6]}...{address[-4:]}"
                     if status == 'Success':
-                        title = "✍️ *Atestasi Sukses*"
+                        title = "✍️ *Attestation Succeeded*"
                     elif status == 'Missed':
-                        title = "⚠️ *Atestasi Terlewat*"
+                        title = "⚠️ *Attestation Missed*"
                     else:
-                        title = "ℹ️ *Update Atestasi*"
-                    msg = f"{title}\nValidator: `{short_addr}` | Slot: `#{slot}`\nHasil: {status}"
+                        title = "ℹ️ *Attestation Update*"
+                    msg = f"{title}\nValidator: `{short_addr}` | Slot: `#{slot}`\nResult: {status}"
                     bot.send_message(chat_id=AUTHORIZED_USER_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
                     if slot > max_new_att:
                         max_new_att = slot
@@ -392,21 +392,21 @@ def check_for_updates(bot: Bot):
                     status_prop = (prop.get('status') or '').lower()
                     short_addr = f"{address[:6]}...{address[-4:]}"
                     if status_prop == 'block-proposed':
-                        title = "📦 *Blok Berhasil Diajukan*"
+                        title = "📦 *Block Proposed*"
                     elif status_prop == 'block-mined':
-                        title = "✅ *Blok Berhasil di-Mine*"
+                        title = "✅ *Block Mined*"
                     elif status_prop == 'block-missed':
-                        title = "❌ *Proposal Blok Terlewat*"
+                        title = "❌ *Block Missed*"
                     else:
-                        logger.warning(f"Status proposal tidak dikenal: '{prop.get('status')}' untuk {short_addr}")
-                        title = "❓ *Update Proposal Blok*"
-                    msg = f"{title}!\nValidator: `{short_addr}` | Slot: `#{slot}`"
+                        logger.warning(f"Unknown proposal status: '{prop.get('status')}' for {short_addr}")
+                        title = "❓ *Block Update*"
+                    msg = f"{title}\nValidator: `{short_addr}` | Slot: `#{slot}`"
                     bot.send_message(chat_id=AUTHORIZED_USER_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
                     if slot > max_new_prop:
                         max_new_prop = slot
             state["latest_proposal_slot"] = max_new_prop
 
-        # --- 2) Queue Activation Check ---
+        # --- 2) Queue activation check ---
         qinfo = fetch_queue_info(address)
         position = qinfo.get('position')
         q_status = (qinfo.get('status') or '').lower()
@@ -424,7 +424,7 @@ def check_for_updates(bot: Bot):
             short_addr = f"{address[:6]}...{address[-4:]}"
             bot.send_message(
                 chat_id=AUTHORIZED_USER_ID,
-                text=f"🎉 *Operator Activated!*\nValidator: `{short_addr}` sudah aktif / keluar dari queue.",
+                text=f"🎉 *Operator Activated!*\nValidator `{short_addr}` is now active / out of the queue.",
                 parse_mode=ParseMode.MARKDOWN
             )
             state["activated_notified"] = True
@@ -432,56 +432,67 @@ def check_for_updates(bot: Bot):
         last_state[address] = state
 
     save_last_state(last_state)
-    logger.info("Pengecekan otomatis selesai.")
+    logger.info("Auto check finished.")
 
 # ----------------- Commands -----------------
 @restricted
 def start(update: Update, context: CallbackContext):
     update.message.reply_html(
-        "Halo! 👋 Bot ini memonitor validator Aztec Anda.\n\n"
-        "<b>Fitur Utama:</b>\n"
-        "1️⃣ <b>Notifikasi Otomatis:</b> Atestasi, proposal blok, dan aktivasi dari queue.\n"
-        "2️⃣ <b>Pengecekan Manual:</b> /check (status lengkap), /queue (info antrian).\n\n"
-        "<b>Perintah:</b>\n"
-        "/add <code>&lt;alamat_validator&gt;</code> – Tambah pantauan\n"
-        "/remove <code>&lt;alamat_validator&gt;</code> – Hapus pantauan\n"
-        "/list – Daftar validator yang dipantau\n"
-        "/check – Status lengkap validator\n"
-        "/queue [alamat] – Info antrian & estimasi aktivasi (bisa satu alamat)"
+        "Hi! 👋 This bot monitors your Aztec validators.\n\n"
+        "<b>Quick tips</b>\n"
+        "• Use <b>/queue</b> to see your queue position and activation ETA.\n"
+        "• Add your validator(s) with <b>/add &lt;address&gt;</b>.\n"
+        "• Check full stats anytime with <b>/check</b>.\n\n"
+        "<b>Commands</b>\n"
+        "/add <code>&lt;validator_address&gt;</code> – Add a validator to watch\n"
+        "/remove <code>&lt;validator_address&gt;</code> – Remove a watched validator\n"
+        "/list – List watched validators\n"
+        "/check – Detailed validator status\n"
+        "/queue [address] – Queue info & ETA (all or a single address)"
     )
 
 @restricted
 def add_validator(update: Update, context: CallbackContext):
     if not context.args:
-        update.message.reply_text("Gunakan format: /add <alamat_validator>")
+        update.message.reply_text(
+            "Usage: /add <validator_address>\n"
+            "Tip: you can also check queue via /queue <address>."
+        )
         return
     address = context.args[0].lower()
     if not (address.startswith("0x") and len(address) == 42):
-        update.message.reply_text("Format alamat tidak valid. Harus diawali '0x' dan 42 karakter.")
+        update.message.reply_text(
+            "Invalid address format. It must start with '0x' and be 42 characters.\n"
+            "Tip: try /queue <address> to look it up first."
+        )
         return
     validators = load_validators()
     if address in validators:
-        update.message.reply_text("Alamat ini sudah ada dalam daftar pantau.")
+        update.message.reply_text("This address is already being watched.")
     else:
         validators.append(address)
         save_validators(validators)
-        update.message.reply_text("✅ Alamat berhasil ditambahkan dan akan dipantau.")
+        update.message.reply_text("✅ Address added. I’ll watch it.\nYou can view queue info with /queue.")
 
 @restricted
 def list_validators(update: Update, context: CallbackContext):
     validators = load_validators()
     if not validators:
-        update.message.reply_text("Daftar pantau kosong. Tambahkan validator dengan perintah /add.")
+        update.message.reply_text(
+            "No validators are being watched yet.\n"
+            "Add one with /add <address> or check the queue via /queue <address>."
+        )
         return
-    message = "📜 *Daftar Validator yang Dipantau:*\n\n"
+    message = "📜 *Watched Validators:*\n\n"
     for i, addr in enumerate(validators, 1):
         message += f"{i}. `{addr}`\n"
+    message += "\nTip: use /queue [address] to see queue position & ETA."
     update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
 
 @restricted
 def remove_validator(update: Update, context: CallbackContext):
     if not context.args:
-        update.message.reply_text("Gunakan format: /remove <alamat_validator>")
+        update.message.reply_text("Usage: /remove <validator_address>")
         return
     address_to_remove = context.args[0].lower()
     validators = load_validators()
@@ -492,18 +503,25 @@ def remove_validator(update: Update, context: CallbackContext):
             del last_state[address_to_remove]
         save_validators(validators)
         save_last_state(last_state)
-        update.message.reply_text("🗑️ Alamat berhasil dihapus dari daftar pantau.")
+        update.message.reply_text("🗑️ Removed from watch list.")
     else:
-        update.message.reply_text("Alamat tidak ditemukan dalam daftar.")
+        update.message.reply_text(
+            "Address not found in your watch list.\n"
+            "Tip: check queue via /queue <address>."
+        )
 
 @restricted
 def check_status_command(update: Update, context: CallbackContext):
     validators_to_check = load_validators()
     if not validators_to_check:
-        update.message.reply_text("Tidak ada validator untuk diperiksa. Tambahkan dengan `/add`.", parse_mode=ParseMode.MARKDOWN)
+        update.message.reply_text(
+            "No validators to check.\n"
+            "Add one with /add <address> or check queue via /queue <address>.",
+            parse_mode=ParseMode.MARKDOWN
+        )
         return
     
-    update.message.reply_text(f"⏳ Memeriksa status untuk {len(validators_to_check)} validator Anda...")
+    update.message.reply_text(f"⏳ Checking {len(validators_to_check)} validators...")
 
     for i, address in enumerate(validators_to_check):
         if i > 0:
@@ -514,14 +532,18 @@ def check_status_command(update: Update, context: CallbackContext):
             message = format_full_status_message(detail_data, rank, score)
             update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
         else:
-            update.message.reply_text(f"❌ Gagal mendapatkan data detail untuk `{address}`.", parse_mode=ParseMode.MARKDOWN)
+            update.message.reply_text(
+                f"❌ Failed to fetch detailed data for `{address}`.\n"
+                f"Tip: try /queue {address} to verify its queue status.",
+                parse_mode=ParseMode.MARKDOWN
+            )
 
 @restricted
 def queue_command(update: Update, context: CallbackContext):
     """
-    /queue [alamat]
-    - tanpa argumen: cek semua validator di daftar pantau
-    - dengan argumen: cek alamat tertentu saja
+    /queue [address]
+    - no args: check all watched validators
+    - with arg: check that single address
     """
     args = context.args
     stats = fetch_queue_stats()
@@ -532,21 +554,26 @@ def queue_command(update: Update, context: CallbackContext):
         targets = []
         addr = args[0].lower()
         if not (addr.startswith("0x") and len(addr) == 42):
-            update.message.reply_text("Format alamat tidak valid. Gunakan: /queue <alamat_validator>")
+            update.message.reply_text("Invalid address. Usage: /queue <validator_address>")
             return
         targets.append(addr)
     else:
         targets = load_validators()
         if not targets:
-            update.message.reply_text("Daftar pantau kosong. Tambahkan validator dengan perintah /add.")
+            update.message.reply_text(
+                "No watched validators.\n"
+                "Add one with /add <address> or query directly: /queue <address>."
+            )
             return
 
     lines = []
     now_str = datetime.now(WIB).strftime('%d %b %Y, %H:%M WIB')
-    lines.append(f"⏱️ *Queue Overview*\n"
-                 f"• Validators/Epoch: *{vpe}*\n"
-                 f"• Epoch Duration: *{epm} menit*\n"
-                 f"• As of: *{now_str}*")
+    lines.append(
+        f"⏱️ *Queue Overview*\n"
+        f"• Validators/Epoch: *{vpe}*\n"
+        f"• Epoch Duration: *{epm} minutes*\n"
+        f"• As of: *{now_str}*"
+    )
 
     for address in targets:
         q = fetch_queue_info(address)
@@ -557,28 +584,28 @@ def queue_command(update: Update, context: CallbackContext):
 
         short_addr = f"{address[:6]}...{address[-4:]}"
         if status == "not-in-queue":
-            status_disp = "aktif (tidak di antrian)"
+            status_disp = "active (not in queue)"
         elif status == "in-queue":
-            status_disp = "dalam antrian"
+            status_disp = "in queue"
         else:
-            status_disp = status
+            status_disp = status or "-"
 
         block = (
             f"\n*{short_addr}*\n"
-            f"• Posisi          : *{pos if pos is not None else '-'}*\n"
-            f"• Status          : *{status_disp}*\n"
-            f"• Est. Aktivasi   : *{eta_text}*"
-            + (f" — (≈ {eta_ts}, ~{epochs_wait} epoch)" if eta_ts != "-" else "")
+            f"• Position       : *{pos if pos is not None else '-'}*\n"
+            f"• Status         : *{status_disp}*\n"
+            f"• ETA            : *{eta_text}*"
+            + (f" — (≈ {eta_ts}, ~{epochs_wait} epoch{'s' if epochs_wait != 1 else ''})" if eta_ts != "-" else "")
         )
         lines.append(block)
 
-    lines.append("\nSumber: testnet.dashtec.xyz/queue")
+    lines.append("\nSource: testnet.dashtec.xyz/queue")
     update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
 
 # ----------------- Main -----------------
 def main():
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN tidak ditemukan. Harap atur di file .env.")
+        logger.error("BOT_TOKEN not set. Please configure .env.")
         return
     
     request_kwargs = {'connect_timeout': 20.0, 'read_timeout': 20.0}
@@ -586,14 +613,15 @@ def main():
     dispatcher = updater.dispatcher
     bot = dispatcher.bot
 
-    # Inisialisasi state (sekali di awal)
-    logger.info("Inisialisasi status notifikasi awal...")
+    # One-time initialization
+    logger.info("Initializing notification baseline...")
     check_for_updates(bot)
-    logger.info("Inisialisasi selesai.")
+    logger.info("Initialization done.")
 
-    # Scheduler: cek otomatis tiap 60 detik
+    # Scheduler: automatic checks every 60s
     scheduler = BackgroundScheduler(timezone=WIB)
-    scheduler.add_job(check_for_updates, 'interval', seconds=60, args=[bot], id="update_check_job", max_instances=1, coalesce=True)
+    scheduler.add_job(check_for_updates, 'interval', seconds=60, args=[bot],
+                      id="update_check_job", max_instances=1, coalesce=True)
     scheduler.start()
 
     # Commands
@@ -606,7 +634,7 @@ def main():
     dispatcher.add_handler(CommandHandler("Queue", queue_command))  # alias
 
     updater.start_polling()
-    logger.info("Bot berjalan. Siap menerima perintah.")
+    logger.info("Bot running. Ready for commands.")
     updater.idle()
 
 if __name__ == '__main__':
