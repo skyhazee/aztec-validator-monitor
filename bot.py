@@ -36,6 +36,7 @@ LAST_STATE_FILE = "last_state.json"
 # API utama (validator) & testnet queue
 API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
 API_URL_LIST = "https://dashtec.xyz/api/validators?"
+
 QUEUE_API_URL = "https://testnet.dashtec.xyz/api/sequencers/queue"
 QUEUE_STATS_URL = "https://testnet.dashtec.xyz/api/sequencers/queue/stats"
 
@@ -170,7 +171,6 @@ def _parse_position_value(val):
     if isinstance(val, int):
         return val
     if isinstance(val, str):
-        # hapus non-digit, contoh '#146' -> '146'
         digits = re.sub(r'\D+', '', val)
         try:
             return int(digits) if digits else None
@@ -181,7 +181,7 @@ def _parse_position_value(val):
 def fetch_queue_info(address: str):
     """
     Cari posisi & status dalam antrian untuk 1 alamat.
-    Struktur API yang benar (contoh):
+    Struktur API (contoh):
     {
       "validatorsInQueue":[{"position":146, "index":"#146", "address":"..."}],
       "filteredCount":1,
@@ -194,7 +194,7 @@ def fetch_queue_info(address: str):
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/queue'
 
-        # 1) Coba via search (paling efisien)
+        # 1) via search
         params = {"page": 1, "limit": 10, "search": address}
         r = scraper.get(QUEUE_API_URL, headers=headers, params=params, timeout=20)
         r.raise_for_status()
@@ -204,20 +204,16 @@ def fetch_queue_info(address: str):
         filtered_count = data.get('filteredCount', None)
 
         if isinstance(validators, list) and validators:
-            item = validators[0]  # karena hasil search harusnya 1 yang paling relevan
-            # posisi bisa ada di 'position' atau hanya di 'index' = "#146"
+            item = validators[0]
             pos = _parse_position_value(item.get('position'))
             if pos is None:
                 pos = _parse_position_value(item.get('index'))
             return {"position": pos, "status": "in-queue", "raw": item, "found": True}
 
-        # jika filteredCount=0 -> tidak ada di antrian
         if filtered_count == 0:
             return {"position": None, "status": "not-in-queue", "raw": {}, "found": False}
 
-        # 2) Fallback: sapu semua halaman (tanpa search)
-        #    mungkin alamatnya ada tapi mekanisme 'search' tidak mengembalikan
-        #    gunakan limit besar untuk efisiensi.
+        # 2) fallback: sapu halaman (tanpa search)
         page = 1
         limit = 200
         total_pages = 1
@@ -246,23 +242,39 @@ def fetch_queue_info(address: str):
 
             page += 1
 
-        # 3) Tidak ditemukan sama sekali -> not in queue
         return {"position": None, "status": "not-in-queue", "raw": {}, "found": False}
 
     except Exception as e:
         logger.error(f"Gagal fetch queue {address}: {e}")
         return {"position": None, "status": None, "raw": {}, "found": False}
 
+# ---------- Estimasi: tampilkan day/hour (tanpa menit) ----------
+def _format_days_hours_from_minutes(total_minutes: int) -> str:
+    """Bulatkan ke jam terdekat (ceil), lalu render 'X days Y hours' / 'X hours'."""
+    if total_minutes <= 0:
+        return "0 hours"
+    hours = math.ceil(total_minutes / 60.0)
+    days = hours // 24
+    rem_hours = hours % 24
+    parts = []
+    if days > 0:
+        parts.append(f"{days} day" + ("s" if days != 1 else ""))
+    if rem_hours > 0 or days == 0:
+        parts.append(f"{rem_hours} hour" + ("s" if rem_hours != 1 else ""))
+    return " ".join(parts)
+
 def estimate_activation_time(position: int | None, stats: dict):
+    """Return (eta_text_human, eta_timestamp_str, epochs_wait)."""
     if position is None or position <= 0:
-        return ("Aktif (tidak dalam antrian)", "-")
+        return ("Aktif (tidak dalam antrian)", "-", 0)
     vpe = stats.get("validators_per_epoch", DEFAULT_VALIDATORS_PER_EPOCH)
     epoch_min = stats.get("epoch_minutes", DEFAULT_EPOCH_MINUTES)
     epochs_wait = math.ceil((position - 1) / max(vpe, 1))
     minutes_wait = epochs_wait * epoch_min
     now = datetime.now(WIB)
     eta_time = now + timedelta(minutes=minutes_wait)
-    return (f"~{minutes_wait} menit ({epochs_wait} epoch)", eta_time.strftime('%d %b %Y, %H:%M WIB'))
+    human = _format_days_hours_from_minutes(minutes_wait)
+    return (human, eta_time.strftime('%d %b %Y, %H:%M WIB'), epochs_wait)
 
 # ----------------- Format Status (Main) -----------------
 def format_full_status_message(data: dict, rank: int | str, score: float | str) -> str:
@@ -337,7 +349,7 @@ def check_for_updates(bot: Bot):
         return
     
     logger.info("Pengecekan otomatis dimulai...")
-    queue_stats = fetch_queue_stats()
+    _ = fetch_queue_stats()  # masih dipakai utk masa depan, saat ini notif activated berdasarkan status queue
 
     for address in validators:
         state = last_state.get(address, {
@@ -394,22 +406,19 @@ def check_for_updates(bot: Bot):
                         max_new_prop = slot
             state["latest_proposal_slot"] = max_new_prop
 
-        # --- 2) Queue Activation Check (berdasar API testnet queue) ---
+        # --- 2) Queue Activation Check ---
         qinfo = fetch_queue_info(address)
         position = qinfo.get('position')
         q_status = (qinfo.get('status') or '').lower()
 
-        # Kondisi dianggap aktif/keluar antrian:
         is_active_like = (q_status == 'not-in-queue')
-        # Simpan posisi saat ini untuk referensi
         state["queue_position"] = position
 
-        # Konfirmasi beruntun untuk hindari false-positive
         if is_active_like:
             state["activation_confirmations"] = state.get("activation_confirmations", 0) + 1
         else:
             state["activation_confirmations"] = 0
-            state["activated_notified"] = False  # reset jika kembali ke antrian
+            state["activated_notified"] = False
 
         if state["activation_confirmations"] >= 2 and not state.get("activated_notified", False):
             short_addr = f"{address[:6]}...{address[-4:]}"
@@ -533,28 +542,33 @@ def queue_command(update: Update, context: CallbackContext):
             return
 
     lines = []
-    lines.append(f"⏱️ *Queue Overview* (validators/epoch: {vpe}, epoch: {epm} menit)")
+    now_str = datetime.now(WIB).strftime('%d %b %Y, %H:%M WIB')
+    lines.append(f"⏱️ *Queue Overview*\n"
+                 f"• Validators/Epoch: *{vpe}*\n"
+                 f"• Epoch Duration: *{epm} menit*\n"
+                 f"• As of: *{now_str}*")
 
     for address in targets:
         q = fetch_queue_info(address)
         pos = q.get('position')
         status = (q.get('status') or "-")
-        eta_str, eta_ts = estimate_activation_time(pos, stats)
-        short_addr = f"{address[:6]}...{address[-4:]}"
 
+        eta_text, eta_ts, epochs_wait = estimate_activation_time(pos, stats)
+
+        short_addr = f"{address[:6]}...{address[-4:]}"
         if status == "not-in-queue":
-            status_disp = "tidak dalam antrian"
+            status_disp = "aktif (tidak di antrian)"
         elif status == "in-queue":
             status_disp = "dalam antrian"
         else:
             status_disp = status
 
         block = (
-            f"\n• `{short_addr}`\n"
-            f"   Posisi: *{pos if pos is not None else '-'}*\n"
-            f"   Status: *{status_disp}*\n"
-            f"   Est. Aktivasi: *{eta_str}*"
-            + (f" (≈ {eta_ts})" if eta_ts != "-" else "")
+            f"\n*{short_addr}*\n"
+            f"• Posisi          : *{pos if pos is not None else '-'}*\n"
+            f"• Status          : *{status_disp}*\n"
+            f"• Est. Aktivasi   : *{eta_text}*"
+            + (f" — (≈ {eta_ts}, ~{epochs_wait} epoch)" if eta_ts != "-" else "")
         )
         lines.append(block)
 
