@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 import time
 import math
+import re
 
 import cloudscraper
 import pytz
@@ -35,10 +36,10 @@ LAST_STATE_FILE = "last_state.json"
 # API utama (validator) & testnet queue
 API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
 API_URL_LIST = "https://dashtec.xyz/api/validators?"
-
 QUEUE_API_URL = "https://testnet.dashtec.xyz/api/sequencers/queue"
 QUEUE_STATS_URL = "https://testnet.dashtec.xyz/api/sequencers/queue/stats"
 
+# Default estimasi kalau stats tidak tersedia
 DEFAULT_EPOCH_MINUTES = 38
 DEFAULT_VALIDATORS_PER_EPOCH = 4
 
@@ -131,6 +132,7 @@ def fetch_validator_rank_and_score(address: str):
 
 # ----------------- API Queue (Testnet) -----------------
 def fetch_queue_stats():
+    """Ambil statistik queue; jika tidak ada field-nya, pakai default."""
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/queue'
@@ -161,84 +163,90 @@ def fetch_queue_stats():
         logger.warning(f"Gagal fetch queue stats, pakai default: {e}")
         return {"epoch_minutes": DEFAULT_EPOCH_MINUTES, "validators_per_epoch": DEFAULT_VALIDATORS_PER_EPOCH}
 
-def _match_address(item: dict, addr_lower: str) -> bool:
-    # Coba beberapa field kandidat alamat/operator
-    for key in ("address", "operator", "validator", "sequencer", "wallet"):
-        val = (item.get(key) or "")
-        if isinstance(val, str) and val.lower() == addr_lower:
-            return True
-    return False
+def _parse_position_value(val):
+    """Terima angka / string '#146' dan kembalikan int 146 bila mungkin."""
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, str):
+        # hapus non-digit, contoh '#146' -> '146'
+        digits = re.sub(r'\D+', '', val)
+        try:
+            return int(digits) if digits else None
+        except Exception:
+            return None
+    return None
 
 def fetch_queue_info(address: str):
     """
-    Menyusuri banyak halaman queue untuk menemukan posisi & status.
-    return: {'position': int|None, 'status': str|None, 'raw': dict, 'found': bool}
+    Cari posisi & status dalam antrian untuk 1 alamat.
+    Struktur API yang benar (contoh):
+    {
+      "validatorsInQueue":[{"position":146, "index":"#146", "address":"..."}],
+      "filteredCount":1,
+      "pagination":{...},
+      "status":"ok"
+    }
+    return: {'position': int|None, 'status': 'in-queue'|'not-in-queue', 'raw': dict, 'found': bool}
     """
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/queue'
 
-        addr_lower = address.lower()
-        limit = 100
-        max_pages = 30  # amannya
-
-        # Pertama: pakai search langsung
+        # 1) Coba via search (paling efisien)
         params = {"page": 1, "limit": 10, "search": address}
         r = scraper.get(QUEUE_API_URL, headers=headers, params=params, timeout=20)
         r.raise_for_status()
         data = r.json() if r.text else {}
-        items = None
-        for key in ('items', 'data', 'validators', 'queue', 'results'):
-            if isinstance(data.get(key), list):
-                items = data[key]
-                break
-        if items is None and isinstance(data, list):
-            items = data
 
-        if items:
-            for it in items:
-                if _match_address(it, addr_lower):
-                    position = it.get('position') or it.get('queuePosition') or it.get('index') or it.get('rank')
-                    try:
-                        position = int(position)
-                    except Exception:
-                        position = None
-                    status = (it.get('status') or it.get('state') or it.get('activationStatus') or '').strip()
-                    return {"position": position, "status": status, "raw": it, "found": True}
+        validators = data.get('validatorsInQueue', [])
+        filtered_count = data.get('filteredCount', None)
 
-        # Kedua: tanpa search, sapu halaman (limit besar)
-        for page in range(1, max_pages + 1):
+        if isinstance(validators, list) and validators:
+            item = validators[0]  # karena hasil search harusnya 1 yang paling relevan
+            # posisi bisa ada di 'position' atau hanya di 'index' = "#146"
+            pos = _parse_position_value(item.get('position'))
+            if pos is None:
+                pos = _parse_position_value(item.get('index'))
+            return {"position": pos, "status": "in-queue", "raw": item, "found": True}
+
+        # jika filteredCount=0 -> tidak ada di antrian
+        if filtered_count == 0:
+            return {"position": None, "status": "not-in-queue", "raw": {}, "found": False}
+
+        # 2) Fallback: sapu semua halaman (tanpa search)
+        #    mungkin alamatnya ada tapi mekanisme 'search' tidak mengembalikan
+        #    gunakan limit besar untuk efisiensi.
+        page = 1
+        limit = 200
+        total_pages = 1
+        while page <= total_pages:
             params = {"page": page, "limit": limit}
-            r = scraper.get(QUEUE_API_URL, headers=headers, params=params, timeout=25)
-            if r.status_code != 200:
+            r2 = scraper.get(QUEUE_API_URL, headers=headers, params=params, timeout=25)
+            if r2.status_code != 200:
                 break
-            data = r.json() if r.text else {}
-            list_candidates = None
-            for key in ('items', 'data', 'validators', 'queue', 'results'):
-                if isinstance(data.get(key), list):
-                    list_candidates = data[key]
+            d2 = r2.json() if r2.text else {}
+            validators2 = d2.get('validatorsInQueue', [])
+            pagination = d2.get('pagination', {})
+            total_pages = int(pagination.get('totalPages', page)) or page
+
+            found_item = None
+            for it in validators2:
+                addr = (it.get('address') or it.get('withdrawerAddress') or '').lower()
+                if addr == address.lower():
+                    found_item = it
                     break
-            if list_candidates is None and isinstance(data, list):
-                list_candidates = data
 
-            if not list_candidates:
-                break
+            if found_item:
+                pos = _parse_position_value(found_item.get('position'))
+                if pos is None:
+                    pos = _parse_position_value(found_item.get('index'))
+                return {"position": pos, "status": "in-queue", "raw": found_item, "found": True}
 
-            # Jika API tidak memberi position langsung, asumsikan urutan = index global
-            for idx, it in enumerate(list_candidates):
-                if _match_address(it, addr_lower):
-                    # Hitung posisi global jika tidak tersedia
-                    position = it.get('position') or it.get('queuePosition') or it.get('rank') or it.get('index')
-                    if position is None:
-                        position = (page - 1) * limit + (idx + 1)
-                    try:
-                        position = int(position)
-                    except Exception:
-                        position = None
-                    status = (it.get('status') or it.get('state') or it.get('activationStatus') or '').strip()
-                    return {"position": position, "status": status, "raw": it, "found": True}
+            page += 1
 
-        # Tidak ditemukan di seluruh halaman -> diasumsikan tidak dalam antrian (aktif)
+        # 3) Tidak ditemukan sama sekali -> not in queue
         return {"position": None, "status": "not-in-queue", "raw": {}, "found": False}
 
     except Exception as e:
@@ -306,7 +314,7 @@ def format_full_status_message(data: dict, rank: int | str, score: float | str) 
         f"🛡️ *Attestation Rate:* {att_rate:.1f}%\n"
         f"    {att_succeeded} Succeeded / {att_missed} Missed\n\n"
         f"📦 *Block Proposal Rate:* {prop_rate:.1f}%\n"
-        f"    {prop_succeeded} Proposed or Mined / {prop_missed} Missed\n\n"
+        f"    {prop_succeeded} Proposed or Mined / {prop_missed}\n\n"
         f"🗓️ *Epoch Participation:* {epoch_part}\n"
         f"🗳️ *Jumlah Voting:* {voting_history_count}\n"
         f"-----------------------------------\n"
@@ -321,7 +329,7 @@ def format_full_status_message(data: dict, rank: int | str, score: float | str) 
 def check_for_updates(bot: Bot):
     """
     Attestation/Proposal (mainnet dashboard) + Queue Activation (testnet).
-    Anti-false-positive: butuh 2 konfirmasi berturut-turut sebelum notif activated.
+    Anti-false-positive: perlu 2 konfirmasi berturut-turut sebelum kirim notif 'activated'.
     """
     validators = load_validators()
     last_state = load_last_state()
@@ -337,7 +345,7 @@ def check_for_updates(bot: Bot):
             "latest_proposal_slot": 0,
             "queue_position": None,
             "activated_notified": False,
-            "activation_confirmations": 0  # butuh 2 kali berturut-turut
+            "activation_confirmations": 0
         })
 
         # --- 1) Validator main data ---
@@ -350,13 +358,13 @@ def check_for_updates(bot: Bot):
                 slot = att.get('slot', 0)
                 if slot > latest_notified_att:
                     status = att.get('status', 'N/A')
+                    short_addr = f"{address[:6]}...{address[-4:]}"
                     if status == 'Success':
                         title = "✍️ *Atestasi Sukses*"
                     elif status == 'Missed':
                         title = "⚠️ *Atestasi Terlewat*"
                     else:
                         title = "ℹ️ *Update Atestasi*"
-                    short_addr = f"{address[:6]}...{address[-4:]}"
                     msg = f"{title}\nValidator: `{short_addr}` | Slot: `#{slot}`\nHasil: {status}"
                     bot.send_message(chat_id=AUTHORIZED_USER_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
                     if slot > max_new_att:
@@ -386,25 +394,23 @@ def check_for_updates(bot: Bot):
                         max_new_prop = slot
             state["latest_proposal_slot"] = max_new_prop
 
-        # --- 2) Queue Activation Check ---
+        # --- 2) Queue Activation Check (berdasar API testnet queue) ---
         qinfo = fetch_queue_info(address)
         position = qinfo.get('position')
         q_status = (qinfo.get('status') or '').lower()
 
-        # Kondisi dianggap "aktif/keluar antrian"
-        is_active_like = False
-        if q_status in ('active', 'activated', 'validating', 'online', 'not-in-queue'):
-            is_active_like = True
-        elif position is None:
-            is_active_like = True
+        # Kondisi dianggap aktif/keluar antrian:
+        is_active_like = (q_status == 'not-in-queue')
+        # Simpan posisi saat ini untuk referensi
+        state["queue_position"] = position
 
+        # Konfirmasi beruntun untuk hindari false-positive
         if is_active_like:
             state["activation_confirmations"] = state.get("activation_confirmations", 0) + 1
         else:
             state["activation_confirmations"] = 0
-            state["activated_notified"] = False  # reset kalau balik ke antrian
+            state["activated_notified"] = False  # reset jika kembali ke antrian
 
-        # Kirim notifikasi hanya saat pertama kali confirmed 2x dan belum pernah notif
         if state["activation_confirmations"] >= 2 and not state.get("activated_notified", False):
             short_addr = f"{address[:6]}...{address[-4:]}"
             bot.send_message(
@@ -414,7 +420,6 @@ def check_for_updates(bot: Bot):
             )
             state["activated_notified"] = True
 
-        state["queue_position"] = position
         last_state[address] = state
 
     save_last_state(last_state)
@@ -514,13 +519,13 @@ def queue_command(update: Update, context: CallbackContext):
     vpe = stats.get("validators_per_epoch", DEFAULT_VALIDATORS_PER_EPOCH)
     epm = stats.get("epoch_minutes", DEFAULT_EPOCH_MINUTES)
 
-    targets = []
     if args:
+        targets = []
         addr = args[0].lower()
         if not (addr.startswith("0x") and len(addr) == 42):
             update.message.reply_text("Format alamat tidak valid. Gunakan: /queue <alamat_validator>")
             return
-        targets = [addr]
+        targets.append(addr)
     else:
         targets = load_validators()
         if not targets:
@@ -536,10 +541,13 @@ def queue_command(update: Update, context: CallbackContext):
         status = (q.get('status') or "-")
         eta_str, eta_ts = estimate_activation_time(pos, stats)
         short_addr = f"{address[:6]}...{address[-4:]}"
+
         if status == "not-in-queue":
-            status_disp = "aktif (tidak di antrian)"
+            status_disp = "tidak dalam antrian"
+        elif status == "in-queue":
+            status_disp = "dalam antrian"
         else:
-            status_disp = status if status else "-"
+            status_disp = status
 
         block = (
             f"\n• `{short_addr}`\n"
