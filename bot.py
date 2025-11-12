@@ -34,8 +34,8 @@ VALIDATORS_FILE = "validators.json"
 LAST_STATE_FILE = "last_state.json"
 
 # Main validator & testnet queue APIs
-API_URL_DETAIL = "https://dashtec.xyz/api/validators/{}"
-API_URL_LIST = "https://dashtec.xyz/api/validators?"
+API_URL_DETAIL = "https://testnet.dashtec.xyz/api/validators/{}"
+API_URL_LIST = "https://testnet.dashtec.xyz/api/validators?"
 
 QUEUE_API_URL = "https://testnet.dashtec.xyz/api/sequencers/queue"
 QUEUE_STATS_URL = "https://testnet.dashtec.xyz/api/sequencers/queue/stats"
