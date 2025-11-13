@@ -30,7 +30,7 @@ except (ValueError, TypeError):
     logger.error("TELEGRAM_ID is invalid or missing in .env.")
     raise SystemExit(1)
 
-# Fast polling interval for near-real-time notifications (seconds)
+# Fast polling interval for (near) real-time notifications
 try:
     CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "3"))
     if CHECK_INTERVAL_SECONDS < 1:
@@ -45,16 +45,14 @@ LAST_STATE_FILE = "last_state.json"
 API_URL_DETAIL = "https://testnet.dashtec.xyz/api/validators/{}"
 API_URL_LIST   = "https://testnet.dashtec.xyz/api/validators?"
 
-QUEUE_API_URL  = "https://testnet.dashtec.xyz/api/sequencers/queue"
-QUEUE_STATS_URL= "https://testnet.dashtec.xyz/api/sequencers/queue/stats"
+QUEUE_API_URL   = "https://testnet.dashtec.xyz/api/sequencers/queue"
+QUEUE_STATS_URL = "https://testnet.dashtec.xyz/api/sequencers/queue/stats"
 
-# Defaults for ETA
 DEFAULT_EPOCH_MINUTES = 38
 DEFAULT_VALIDATORS_PER_EPOCH = 4
 
 WIB = pytz.timezone('Asia/Jakarta')
 
-# cloudscraper with default retries
 scraper = cloudscraper.create_scraper()
 
 BROWSER_HEADERS = {
@@ -112,7 +110,7 @@ def save_last_state(state):
 
 # ----------------- Main Validator API -----------------
 def fetch_validator_data(address: str):
-    """Return JSON or None. Includes referer for CF."""
+    """Return JSON or None."""
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = f"https://testnet.dashtec.xyz/validators/{address}"
@@ -124,7 +122,7 @@ def fetch_validator_data(address: str):
         return None
 
 def fetch_validator_rank_and_score(address: str):
-    """Best effort rank/score (may be N/A on testnet)."""
+    """Best-effort rank/score (may be N/A on testnet)."""
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/validators'
@@ -142,7 +140,7 @@ def fetch_validator_rank_and_score(address: str):
     except Exception:
         return "N/A", "N/A"
 
-# ----------------- Queue API (Testnet) -----------------
+# ----------------- Queue API (for /queue command only) -----------------
 def fetch_queue_stats():
     try:
         headers = BROWSER_HEADERS.copy()
@@ -182,6 +180,7 @@ def _parse_position_value(val):
     return None
 
 def fetch_queue_info(address: str):
+    """Used only for /queue command (tidak kirim notif otomatis)."""
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/queue'
@@ -202,7 +201,7 @@ def fetch_queue_info(address: str):
         logger.error(f"Failed to fetch queue for {address}: {e}")
         return {"position": None, "status": None, "raw": {}, "found": False}
 
-# ---------- ETA formatting: day/hour (no minutes) ----------
+# ---------- ETA formatting: day/hour ----------
 def _format_days_hours_from_minutes(total_minutes: int) -> str:
     if total_minutes <= 0:
         return "0 hours"
@@ -288,16 +287,11 @@ def format_full_status_message(data: dict, rank: int | str, score: float | str) 
     )
     return message
 
-# ----------------- Auto Notifications -----------------
+# ----------------- Auto Notifications (attestation & proposal only) -----------------
 def notify_attestations(bot: Bot, address: str, data: dict, state: dict):
-    """
-    Send attestation notifications in chronological order.
-    Uses state['latest_attestation_slot'] to de-dup.
-    """
     latest_sent = int(state.get("latest_attestation_slot", 0) or 0)
     atts = data.get('recentAttestations', []) or []
 
-    # Sort by slot ascending so we deliver in order
     try:
         atts_sorted = sorted(atts, key=lambda a: int(a.get('slot', 0) or 0))
     except Exception:
@@ -309,7 +303,7 @@ def notify_attestations(bot: Bot, address: str, data: dict, state: dict):
     for att in atts_sorted:
         slot = int(att.get('slot', 0) or 0)
         if slot <= latest_sent:
-            continue  # already sent before
+            continue
 
         status = att.get('status', 'N/A')
         if status == 'Success':
@@ -364,51 +358,27 @@ def notify_proposals(bot: Bot, address: str, data: dict, state: dict):
 
 def check_for_updates(bot: Bot):
     """
-    Near-real-time loop via scheduler:
-      - Attestations & proposals (ordered, deduped)
-      - Queue activation (requires 2 consecutive confirmations)
+    Periodic check:
+      - attestation notifications
+      - proposal notifications
+    No more 'Operator Activated' spam.
     """
     validators = load_validators()
     if not validators:
         return
 
     last_state = load_last_state()
-    stats = fetch_queue_stats()  # currently unused for notif, but kept for future needs
 
     for address in validators:
         state = last_state.get(address, {
             "latest_attestation_slot": 0,
             "latest_proposal_slot": 0,
-            "queue_position": None,
-            "activated_notified": False,
-            "activation_confirmations": 0
         })
 
-        # --- 1) validator details ---
         data = fetch_validator_data(address)
         if data:
             notify_attestations(bot, address, data, state)
             notify_proposals(bot, address, data, state)
-
-        # --- 2) queue activation check ---
-        qinfo = fetch_queue_info(address)
-        q_status = (qinfo.get('status') or '').lower()
-        is_active_like = (q_status == 'not-in-queue')
-
-        if is_active_like:
-            state["activation_confirmations"] = int(state.get("activation_confirmations", 0)) + 1
-        else:
-            state["activation_confirmations"] = 0
-            state["activated_notified"] = False
-
-        if state["activation_confirmations"] >= 2 and not state.get("activated_notified", False):
-            short_addr = f"{address[:6]}...{address[-4:]}"
-            bot.send_message(
-                chat_id=AUTHORIZED_USER_ID,
-                text=f"🎉 *Operator Activated!*\nValidator `{short_addr}` is now active / out of the queue.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-            state["activated_notified"] = True
 
         last_state[address] = state
 
@@ -506,7 +476,7 @@ def check_status_command(update: Update, context: CallbackContext):
 
     for i, address in enumerate(validators_to_check):
         if i > 0:
-            time.sleep(0.5)  # lighter spacing
+            time.sleep(0.5)
         rank, score = fetch_validator_rank_and_score(address)
         detail_data = fetch_validator_data(address)
         if detail_data:
@@ -589,12 +559,10 @@ def main():
     dispatcher = updater.dispatcher
     bot = dispatcher.bot
 
-    # Initialize baseline once
     logger.info("Initializing notification baseline...")
     check_for_updates(bot)
     logger.info(f"Initialization done. Poll interval = {CHECK_INTERVAL_SECONDS}s")
 
-    # Scheduler: faster interval for near real-time
     scheduler = BackgroundScheduler(timezone=WIB)
     scheduler.add_job(
         check_for_updates,
@@ -607,7 +575,6 @@ def main():
     )
     scheduler.start()
 
-    # Commands
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("add", add_validator))
     dispatcher.add_handler(CommandHandler("list", list_validators))
