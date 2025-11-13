@@ -19,34 +19,42 @@ from apscheduler.schedulers.background import BackgroundScheduler
 load_dotenv()
 
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+    format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("aztec-bot")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 try:
     AUTHORIZED_USER_ID = int(os.getenv("TELEGRAM_ID"))
 except (ValueError, TypeError):
     logger.error("TELEGRAM_ID is invalid or missing in .env.")
-    exit()
+    raise SystemExit(1)
+
+# Fast polling interval for near-real-time notifications (seconds)
+try:
+    CHECK_INTERVAL_SECONDS = int(os.getenv("CHECK_INTERVAL_SECONDS", "3"))
+    if CHECK_INTERVAL_SECONDS < 1:
+        CHECK_INTERVAL_SECONDS = 3
+except Exception:
+    CHECK_INTERVAL_SECONDS = 3
 
 VALIDATORS_FILE = "validators.json"
 LAST_STATE_FILE = "last_state.json"
 
-# Main validator & testnet queue APIs
+# Testnet APIs
 API_URL_DETAIL = "https://testnet.dashtec.xyz/api/validators/{}"
-API_URL_LIST = "https://testnet.dashtec.xyz/api/validators?"
+API_URL_LIST   = "https://testnet.dashtec.xyz/api/validators?"
 
-QUEUE_API_URL = "https://testnet.dashtec.xyz/api/sequencers/queue"
-QUEUE_STATS_URL = "https://testnet.dashtec.xyz/api/sequencers/queue/stats"
+QUEUE_API_URL  = "https://testnet.dashtec.xyz/api/sequencers/queue"
+QUEUE_STATS_URL= "https://testnet.dashtec.xyz/api/sequencers/queue/stats"
 
-# Defaults for ETA if stats are unavailable
+# Defaults for ETA
 DEFAULT_EPOCH_MINUTES = 38
 DEFAULT_VALIDATORS_PER_EPOCH = 4
 
-# Timezone
 WIB = pytz.timezone('Asia/Jakarta')
 
+# cloudscraper with default retries
 scraper = cloudscraper.create_scraper()
 
 BROWSER_HEADERS = {
@@ -85,8 +93,10 @@ def load_json_file(filename: str, default_value=None):
         return default_value
 
 def save_json_file(filename: str, data):
-    with open(filename, 'w', encoding='utf-8') as f:
+    tmp = filename + ".tmp"
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4)
+    os.replace(tmp, filename)
 
 def load_validators():
     return load_json_file(VALIDATORS_FILE, [])
@@ -102,43 +112,42 @@ def save_last_state(state):
 
 # ----------------- Main Validator API -----------------
 def fetch_validator_data(address: str):
+    """Return JSON or None. Includes referer for CF."""
     try:
         headers = BROWSER_HEADERS.copy()
-        headers['referer'] = f"https://dashtec.xyz/validators/{address}"
-        response = scraper.get(API_URL_DETAIL.format(address), timeout=30, headers=headers)
-        response.raise_for_status()
-        return response.json()
+        headers['referer'] = f"https://testnet.dashtec.xyz/validators/{address}"
+        resp = scraper.get(API_URL_DETAIL.format(address), timeout=20, headers=headers)
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
         logger.error(f"Failed to fetch details for {address}: {e}")
         return None
 
 def fetch_validator_rank_and_score(address: str):
+    """Best effort rank/score (may be N/A on testnet)."""
     try:
         headers = BROWSER_HEADERS.copy()
-        headers['referer'] = 'https://dashtec.xyz/validators'
+        headers['referer'] = 'https://testnet.dashtec.xyz/validators'
         search_url = f"{API_URL_LIST}search={address}"
-        response = scraper.get(search_url, timeout=30, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+        resp = scraper.get(search_url, timeout=15, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
         validators_list = data.get('validators', []) or data.get('data', []) or []
         if not validators_list:
-            logger.warning(f"Validator {address} not found via search API.")
             return "N/A", "N/A"
-        validator_info = validators_list[0]
-        rank = validator_info.get('rank', 'N/A')
-        score = validator_info.get('performanceScore', 'N/A')
+        info = validators_list[0]
+        rank = info.get('rank', 'N/A')
+        score = info.get('performanceScore', 'N/A')
         return rank, score
-    except Exception as e:
-        logger.error(f"Failed to fetch rank/score for {address}: {e}")
+    except Exception:
         return "N/A", "N/A"
 
 # ----------------- Queue API (Testnet) -----------------
 def fetch_queue_stats():
-    """Get queue stats; fallback to defaults if missing."""
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/queue'
-        r = scraper.get(QUEUE_STATS_URL, headers=headers, timeout=20)
+        r = scraper.get(QUEUE_STATS_URL, headers=headers, timeout=15)
         r.raise_for_status()
         data = r.json() if r.text else {}
         epoch_minutes = (
@@ -152,21 +161,14 @@ def fetch_queue_stats():
             data.get('validators_per_epoch') or
             DEFAULT_VALIDATORS_PER_EPOCH
         )
-        try:
-            epoch_minutes = int(epoch_minutes)
-        except Exception:
-            epoch_minutes = DEFAULT_EPOCH_MINUTES
-        try:
-            validators_per_epoch = int(validators_per_epoch)
-        except Exception:
-            validators_per_epoch = DEFAULT_VALIDATORS_PER_EPOCH
+        epoch_minutes = int(epoch_minutes) if str(epoch_minutes).isdigit() else DEFAULT_EPOCH_MINUTES
+        validators_per_epoch = int(validators_per_epoch) if str(validators_per_epoch).isdigit() else DEFAULT_VALIDATORS_PER_EPOCH
         return {"epoch_minutes": epoch_minutes, "validators_per_epoch": validators_per_epoch}
     except Exception as e:
         logger.warning(f"Failed to fetch queue stats, using defaults: {e}")
         return {"epoch_minutes": DEFAULT_EPOCH_MINUTES, "validators_per_epoch": DEFAULT_VALIDATORS_PER_EPOCH}
 
 def _parse_position_value(val):
-    """Accept int or string like '#146' -> int 146."""
     if val is None:
         return None
     if isinstance(val, int):
@@ -180,77 +182,28 @@ def _parse_position_value(val):
     return None
 
 def fetch_queue_info(address: str):
-    """
-    Find queue position & status for one address.
-    Expected structure:
-    {
-      "validatorsInQueue":[{"position":146,"index":"#146","address":"..."}],
-      "filteredCount":1,
-      ...
-    }
-    Return: {'position': int|None, 'status': 'in-queue'|'not-in-queue', 'raw': dict, 'found': bool}
-    """
     try:
         headers = BROWSER_HEADERS.copy()
         headers['referer'] = 'https://testnet.dashtec.xyz/queue'
-
-        # 1) search (fast path)
         params = {"page": 1, "limit": 10, "search": address}
-        r = scraper.get(QUEUE_API_URL, headers=headers, params=params, timeout=20)
+        r = scraper.get(QUEUE_API_URL, headers=headers, params=params, timeout=15)
         r.raise_for_status()
         data = r.json() if r.text else {}
-
         validators = data.get('validatorsInQueue', [])
         filtered_count = data.get('filteredCount', None)
-
         if isinstance(validators, list) and validators:
             item = validators[0]
-            pos = _parse_position_value(item.get('position'))
-            if pos is None:
-                pos = _parse_position_value(item.get('index'))
+            pos = _parse_position_value(item.get('position')) or _parse_position_value(item.get('index'))
             return {"position": pos, "status": "in-queue", "raw": item, "found": True}
-
         if filtered_count == 0:
             return {"position": None, "status": "not-in-queue", "raw": {}, "found": False}
-
-        # 2) fallback: sweep pages (if search fails to match)
-        page = 1
-        limit = 200
-        total_pages = 1
-        while page <= total_pages:
-            params = {"page": page, "limit": limit}
-            r2 = scraper.get(QUEUE_API_URL, headers=headers, params=params, timeout=25)
-            if r2.status_code != 200:
-                break
-            d2 = r2.json() if r2.text else {}
-            validators2 = d2.get('validatorsInQueue', [])
-            pagination = d2.get('pagination', {})
-            total_pages = int(pagination.get('totalPages', page)) or page
-
-            found_item = None
-            for it in validators2:
-                addr = (it.get('address') or it.get('withdrawerAddress') or '').lower()
-                if addr == address.lower():
-                    found_item = it
-                    break
-
-            if found_item:
-                pos = _parse_position_value(found_item.get('position'))
-                if pos is None:
-                    pos = _parse_position_value(found_item.get('index'))
-                return {"position": pos, "status": "in-queue", "raw": found_item, "found": True}
-
-            page += 1
-
-        return {"position": None, "status": "not-in-queue", "raw": {}, "found": False}
-
+        return {"position": None, "status": None, "raw": {}, "found": False}
     except Exception as e:
         logger.error(f"Failed to fetch queue for {address}: {e}")
         return {"position": None, "status": None, "raw": {}, "found": False}
 
 # ---------- ETA formatting: day/hour (no minutes) ----------
 def _format_days_hours_from_minutes(total_minutes: int) -> str:
-    """Ceil to the nearest hour, render as 'X days Y hours' or 'X hours'."""
     if total_minutes <= 0:
         return "0 hours"
     hours = math.ceil(total_minutes / 60.0)
@@ -264,12 +217,11 @@ def _format_days_hours_from_minutes(total_minutes: int) -> str:
     return " ".join(parts)
 
 def estimate_activation_time(position: int | None, stats: dict):
-    """Return (eta_text_human, eta_timestamp_str, epochs_wait)."""
     if position is None or position <= 0:
         return ("Active (not in queue)", "-", 0)
-    vpe = stats.get("validators_per_epoch", DEFAULT_VALIDATORS_PER_EPOCH)
-    epoch_min = stats.get("epoch_minutes", DEFAULT_EPOCH_MINUTES)
-    epochs_wait = math.ceil((position - 1) / max(vpe, 1))
+    vpe = max(int(stats.get("validators_per_epoch", DEFAULT_VALIDATORS_PER_EPOCH)), 1)
+    epoch_min = int(stats.get("epoch_minutes", DEFAULT_EPOCH_MINUTES))
+    epochs_wait = math.ceil((position - 1) / vpe)
     minutes_wait = epochs_wait * epoch_min
     now = datetime.now(WIB)
     eta_time = now + timedelta(minutes=minutes_wait)
@@ -280,7 +232,6 @@ def estimate_activation_time(position: int | None, stats: dict):
 def format_full_status_message(data: dict, rank: int | str, score: float | str) -> str:
     if not data:
         return "Failed to get data."
-
     addr = data.get('address', '')
     short_addr = f"{addr[:6]}...{addr[-4:]}" if len(addr) > 10 else addr
 
@@ -298,15 +249,15 @@ def format_full_status_message(data: dict, rank: int | str, score: float | str) 
     except (ValueError, TypeError):
         balance, total_rewards = 0.0, 0.0
     
-    att_succeeded = data.get('totalAttestationsSucceeded', 0)
-    att_missed = data.get('totalAttestationsMissed', 0)
+    att_succeeded = int(data.get('totalAttestationsSucceeded', 0) or 0)
+    att_missed = int(data.get('totalAttestationsMissed', 0) or 0)
     total_att = att_succeeded + att_missed
     att_rate = (att_succeeded / total_att * 100) if total_att > 0 else 0
     
-    prop_proposed = data.get('totalBlocksProposed', 0)
-    prop_mined = data.get('totalBlocksMined', 0)
+    prop_proposed = int(data.get('totalBlocksProposed', 0) or 0)
+    prop_mined = int(data.get('totalBlocksMined', 0) or 0)
     prop_succeeded = prop_proposed + prop_mined
-    prop_missed = data.get('totalBlocksMissed', 0)
+    prop_missed = int(data.get('totalBlocksMissed', 0) or 0)
     total_prop = prop_succeeded + prop_missed
     prop_rate = (prop_succeeded / total_prop * 100) if total_prop > 0 else 0
 
@@ -330,7 +281,7 @@ def format_full_status_message(data: dict, rank: int | str, score: float | str) 
         f"🗓️ *Epoch Participation:* {epoch_part}\n"
         f"🗳️ *Voting Count:* {voting_history_count}\n"
         f"-----------------------------------\n"
-        f"[Open on Dashboard](https://dashtec.xyz/validators/{addr})\n\n"
+        f"[Open on Dashboard](https://testnet.dashtec.xyz/validators/{addr})\n\n"
         f"🕒 *Last checked:* {timestamp}\n"
         f"-----------------------------------\n"
         f"Support me on [X](https://x.com/skyhazeed) | [Github](https://github.com/skyhazee)"
@@ -338,18 +289,91 @@ def format_full_status_message(data: dict, rank: int | str, score: float | str) 
     return message
 
 # ----------------- Auto Notifications -----------------
+def notify_attestations(bot: Bot, address: str, data: dict, state: dict):
+    """
+    Send attestation notifications in chronological order.
+    Uses state['latest_attestation_slot'] to de-dup.
+    """
+    latest_sent = int(state.get("latest_attestation_slot", 0) or 0)
+    atts = data.get('recentAttestations', []) or []
+
+    # Sort by slot ascending so we deliver in order
+    try:
+        atts_sorted = sorted(atts, key=lambda a: int(a.get('slot', 0) or 0))
+    except Exception:
+        atts_sorted = atts
+
+    short_addr = f"{address[:6]}...{address[-4:]}"
+    new_max = latest_sent
+
+    for att in atts_sorted:
+        slot = int(att.get('slot', 0) or 0)
+        if slot <= latest_sent:
+            continue  # already sent before
+
+        status = att.get('status', 'N/A')
+        if status == 'Success':
+            title = "✍️ *Attestation Succeeded*"
+        elif status == 'Missed':
+            title = "⚠️ *Attestation Missed*"
+        else:
+            title = "ℹ️ *Attestation Update*"
+
+        msg = f"{title}\nValidator: `{short_addr}` | Slot: `#{slot}`\nResult: {status}"
+        bot.send_message(chat_id=AUTHORIZED_USER_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
+
+        if slot > new_max:
+            new_max = slot
+
+    state["latest_attestation_slot"] = new_max
+
+def notify_proposals(bot: Bot, address: str, data: dict, state: dict):
+    latest_sent = int(state.get("latest_proposal_slot", 0) or 0)
+    props = data.get('proposalHistory', []) or []
+
+    try:
+        props_sorted = sorted(props, key=lambda p: int(p.get('slot', 0) or 0))
+    except Exception:
+        props_sorted = props
+
+    short_addr = f"{address[:6]}...{address[-4:]}"
+    new_max = latest_sent
+
+    for prop in props_sorted:
+        slot = int(prop.get('slot', 0) or 0)
+        if slot <= latest_sent:
+            continue
+
+        status_prop = (prop.get('status') or '').lower()
+        if status_prop == 'block-proposed':
+            title = "📦 *Block Proposed*"
+        elif status_prop == 'block-mined':
+            title = "✅ *Block Mined*"
+        elif status_prop == 'block-missed':
+            title = "❌ *Block Missed*"
+        else:
+            title = "❓ *Block Update*"
+
+        msg = f"{title}\nValidator: `{short_addr}` | Slot: `#{slot}`"
+        bot.send_message(chat_id=AUTHORIZED_USER_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
+
+        if slot > new_max:
+            new_max = slot
+
+    state["latest_proposal_slot"] = new_max
+
 def check_for_updates(bot: Bot):
     """
-    Attestation/Proposal (main dashboard) + Queue Activation (testnet).
-    Anti false-positive: require 2 consecutive confirmations before sending 'activated' notification.
+    Near-real-time loop via scheduler:
+      - Attestations & proposals (ordered, deduped)
+      - Queue activation (requires 2 consecutive confirmations)
     """
     validators = load_validators()
-    last_state = load_last_state()
     if not validators:
         return
-    
-    logger.info("Auto check started...")
-    _ = fetch_queue_stats()  # Reserved for future use
+
+    last_state = load_last_state()
+    stats = fetch_queue_stats()  # currently unused for notif, but kept for future needs
 
     for address in validators:
         state = last_state.get(address, {
@@ -360,62 +384,19 @@ def check_for_updates(bot: Bot):
             "activation_confirmations": 0
         })
 
-        # --- 1) Main validator data ---
+        # --- 1) validator details ---
         data = fetch_validator_data(address)
         if data:
-            # Attestation
-            latest_notified_att = state.get("latest_attestation_slot", 0)
-            max_new_att = latest_notified_att
-            for att in data.get('recentAttestations', []):
-                slot = att.get('slot', 0)
-                if slot > latest_notified_att:
-                    status = att.get('status', 'N/A')
-                    short_addr = f"{address[:6]}...{address[-4:]}"
-                    if status == 'Success':
-                        title = "✍️ *Attestation Succeeded*"
-                    elif status == 'Missed':
-                        title = "⚠️ *Attestation Missed*"
-                    else:
-                        title = "ℹ️ *Attestation Update*"
-                    msg = f"{title}\nValidator: `{short_addr}` | Slot: `#{slot}`\nResult: {status}"
-                    bot.send_message(chat_id=AUTHORIZED_USER_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
-                    if slot > max_new_att:
-                        max_new_att = slot
-            state["latest_attestation_slot"] = max_new_att
+            notify_attestations(bot, address, data, state)
+            notify_proposals(bot, address, data, state)
 
-            # Proposal
-            latest_notified_prop = state.get("latest_proposal_slot", 0)
-            max_new_prop = latest_notified_prop
-            for prop in data.get('proposalHistory', []):
-                slot = prop.get('slot', 0)
-                if slot > latest_notified_prop:
-                    status_prop = (prop.get('status') or '').lower()
-                    short_addr = f"{address[:6]}...{address[-4:]}"
-                    if status_prop == 'block-proposed':
-                        title = "📦 *Block Proposed*"
-                    elif status_prop == 'block-mined':
-                        title = "✅ *Block Mined*"
-                    elif status_prop == 'block-missed':
-                        title = "❌ *Block Missed*"
-                    else:
-                        logger.warning(f"Unknown proposal status: '{prop.get('status')}' for {short_addr}")
-                        title = "❓ *Block Update*"
-                    msg = f"{title}\nValidator: `{short_addr}` | Slot: `#{slot}`"
-                    bot.send_message(chat_id=AUTHORIZED_USER_ID, text=msg, parse_mode=ParseMode.MARKDOWN)
-                    if slot > max_new_prop:
-                        max_new_prop = slot
-            state["latest_proposal_slot"] = max_new_prop
-
-        # --- 2) Queue activation check ---
+        # --- 2) queue activation check ---
         qinfo = fetch_queue_info(address)
-        position = qinfo.get('position')
         q_status = (qinfo.get('status') or '').lower()
-
         is_active_like = (q_status == 'not-in-queue')
-        state["queue_position"] = position
 
         if is_active_like:
-            state["activation_confirmations"] = state.get("activation_confirmations", 0) + 1
+            state["activation_confirmations"] = int(state.get("activation_confirmations", 0)) + 1
         else:
             state["activation_confirmations"] = 0
             state["activated_notified"] = False
@@ -432,7 +413,6 @@ def check_for_updates(bot: Bot):
         last_state[address] = state
 
     save_last_state(last_state)
-    logger.info("Auto check finished.")
 
 # ----------------- Commands -----------------
 @restricted
@@ -440,9 +420,10 @@ def start(update: Update, context: CallbackContext):
     update.message.reply_html(
         "Hi! 👋 This bot monitors your Aztec validators.\n\n"
         "<b>Quick tips</b>\n"
-        "• Use <b>/queue</b> to see your queue position and activation ETA.\n"
-        "• Add your validator(s) with <b>/add &lt;address&gt;</b>.\n"
-        "• Check full stats anytime with <b>/check</b>.\n\n"
+        f"• Use <b>/queue</b> to see queue position & ETA.\n"
+        f"• Add your validator(s) with <b>/add &lt;address&gt;</b>.\n"
+        f"• Check full stats anytime with <b>/check</b>.\n"
+        f"• Polling interval: <b>{CHECK_INTERVAL_SECONDS}s</b> (configurable via CHECK_INTERVAL_SECONDS in .env)\n\n"
         "<b>Commands</b>\n"
         "/add <code>&lt;validator_address&gt;</code> – Add a validator to watch\n"
         "/remove <code>&lt;validator_address&gt;</code> – Remove a watched validator\n"
@@ -525,7 +506,7 @@ def check_status_command(update: Update, context: CallbackContext):
 
     for i, address in enumerate(validators_to_check):
         if i > 0:
-            time.sleep(1)
+            time.sleep(0.5)  # lighter spacing
         rank, score = fetch_validator_rank_and_score(address)
         detail_data = fetch_validator_data(address)
         if detail_data:
@@ -540,11 +521,6 @@ def check_status_command(update: Update, context: CallbackContext):
 
 @restricted
 def queue_command(update: Update, context: CallbackContext):
-    """
-    /queue [address]
-    - no args: check all watched validators
-    - with arg: check that single address
-    """
     args = context.args
     stats = fetch_queue_stats()
     vpe = stats.get("validators_per_epoch", DEFAULT_VALIDATORS_PER_EPOCH)
@@ -608,20 +584,27 @@ def main():
         logger.error("BOT_TOKEN not set. Please configure .env.")
         return
     
-    request_kwargs = {'connect_timeout': 20.0, 'read_timeout': 20.0}
+    request_kwargs = {'connect_timeout': 15.0, 'read_timeout': 15.0}
     updater = Updater(BOT_TOKEN, use_context=True, request_kwargs=request_kwargs)
     dispatcher = updater.dispatcher
     bot = dispatcher.bot
 
-    # One-time initialization
+    # Initialize baseline once
     logger.info("Initializing notification baseline...")
     check_for_updates(bot)
-    logger.info("Initialization done.")
+    logger.info(f"Initialization done. Poll interval = {CHECK_INTERVAL_SECONDS}s")
 
-    # Scheduler: automatic checks every 60s
+    # Scheduler: faster interval for near real-time
     scheduler = BackgroundScheduler(timezone=WIB)
-    scheduler.add_job(check_for_updates, 'interval', seconds=60, args=[bot],
-                      id="update_check_job", max_instances=1, coalesce=True)
+    scheduler.add_job(
+        check_for_updates,
+        'interval',
+        seconds=CHECK_INTERVAL_SECONDS,
+        args=[bot],
+        id="update_check_job",
+        max_instances=1,
+        coalesce=True
+    )
     scheduler.start()
 
     # Commands
@@ -633,7 +616,7 @@ def main():
     dispatcher.add_handler(CommandHandler("queue", queue_command))
     dispatcher.add_handler(CommandHandler("Queue", queue_command))  # alias
 
-    updater.start_polling()
+    updater.start_polling(drop_pending_updates=True)
     logger.info("Bot running. Ready for commands.")
     updater.idle()
 
